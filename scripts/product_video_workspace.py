@@ -92,6 +92,7 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS video_manual_orders (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_bitable_records (
                     app_token TEXT NOT NULL, table_id TEXT NOT NULL, video_id TEXT NOT NULL,
                     record_id TEXT NOT NULL, PRIMARY KEY(app_token, table_id, video_id));
@@ -172,7 +173,10 @@ def snapshot(product_id):
         job["message"] = job.get("message", "").replace(" · 1 credit", "").replace("（本页 1 credit）", "")
     if job and job.get("status") in {"queued", "running"} and job.get("owner") != _owner:
         job.update(status="failed", message="服务已重启，本次任务中断；已保存的数据仍可查看，请重新更新。")
+    from video_performance_context import collection_links
+    links=collection_links(ROOT,[video['video_id'] for video in videos])
     for video in videos:
+        video['collection_link']=links.get(video['video_id'])
         folder = MEDIA / video["video_id"]
         video["downloaded"] = video_expiry(folder) > time.time()
         video["audio_ready"] = (folder / "audio.mp3").is_file()
@@ -316,7 +320,7 @@ def start(payload):
     video_tables(pid)
     kind = payload.get("action", "refresh")
     vid = str(payload.get("video_id") or "")
-    if kind not in {"refresh", "more", "play", "download", "audio"}:
+    if kind not in {"refresh", "more", "play", "download", "audio", "review"}:
         raise ValueError("不支持的任务类型")
     with _lock:
         state = snapshot(pid)
@@ -333,6 +337,10 @@ def start(payload):
         job = {"id": uuid.uuid4().hex, "owner": _owner, "product_id": pid, "video_id": vid,
                "action": kind, "status": "queued", "done": 0, "total": 0, "failures": 0,
                "message": "已加入队列", "started_at": time.time()}
+        if kind == 'review':
+            note = payload.get('logic_note','')
+            if not isinstance(note,str):raise ValueError('逻辑补充必须为文字')
+            job.update(force=payload.get('force') is True,logic_note=note[:4000])
         if kind == "more":
             job["cursor"] = state["cursor"]
         save_job(job)
@@ -345,7 +353,10 @@ def run_job(job):
     try:
         job.update(status="running", message="正在读取商品关联视频…")
         save_job(job)
-        if pid.startswith("account:") and not vid and job["action"] in {"refresh", "more"}:
+        if job["action"] == "review":
+            from native_video_review import run_review
+            run_review(sys.modules[__name__], job)
+        elif pid.startswith("account:") and not vid and job["action"] in {"refresh", "more"}:
             fetch_account_page(job)
         elif job["action"] != "refresh":
             prepare_media(job)
@@ -573,7 +584,7 @@ def prepare_media(job):
             finally:
                 pending.unlink(missing_ok=True)
         write_json(folder / "cache.json", {"expires_at": max(expires_at, time.time() + (7 if job["action"] == "audio" else 1) * 86400)})
-        if job["action"] in {"play", "download"}:
+        if job["action"] in {"play", "download", "review"}:
             job["message"] = "视频已就绪，可以播放。"
             return
         audio = folder / "audio.mp3"
@@ -703,14 +714,19 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint in {"jobs", "write-table"}:
+        if handler.command == "POST" and endpoint in {"jobs", "write-table", "orders", "collect-retention"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
             payload = json.loads(handler.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            reply(handler, 202 if endpoint == "jobs" else 200, start(payload) if endpoint == "jobs" else write_table(payload))
+            if endpoint in {'orders', 'collect-retention'}:
+                from video_review_inputs import save_orders, start_collection
+                result = (save_orders if endpoint == 'orders' else start_collection)(sys.modules[__name__], payload)
+                reply(handler, 200 if endpoint == 'orders' else 202, result)
+            else:
+                reply(handler, 202 if endpoint == "jobs" else 200, start(payload) if endpoint == "jobs" else write_table(payload))
         elif handler.command != "GET":
             reply(handler, 405, {"error": "不支持的操作"})
         elif endpoint == "accounts":
@@ -729,6 +745,16 @@ def handle(handler, parsed, serve_file):
             reply(handler, 200, path.read_bytes(), "image/jpeg", "public, max-age=86400")
         elif endpoint == "media":
             reply(handler, 200, media_state(pid, vid))
+        elif endpoint == "review":
+            from native_video_review import review_state
+            reply(handler, 200, review_state(sys.modules[__name__], pid, vid))
+        elif endpoint == 'review-inputs':
+            from video_review_inputs import input_state
+            reply(handler, 200, input_state(sys.modules[__name__], pid, vid))
+        elif endpoint == 'collection-targets':
+            item(pid, vid)
+            from tiktok_studio_collect import list_feishu_targets
+            reply(handler, 200, list_feishu_targets())
         elif endpoint == "file":
             item(pid, vid)
             kind = query.get("kind", ["video"])[0]

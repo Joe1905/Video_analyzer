@@ -2,6 +2,25 @@
 const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
+state.reviews = new Map();state.savedReviews=[];state.review=null;state.reviewSeq=0;state.reviewTimer=null;
+async function loadReviewLinks() {
+  try {
+    const files=await api('/api/files');
+    const count=(Array.isArray(files)?files:[]).filter(f=>f.review_available).length;
+    state.savedReviews=(Array.isArray(files)?files:[]).filter(f=>f.review_available);
+    $("reviewLibraryCount").textContent=`（${count}）`;
+    state.reviews=new Map((Array.isArray(files)?files:[]).filter(f=>f.review_available&&/^\d{15,25}$/.test(String(f.review_video_id||''))).map(f=>[String(f.review_video_id),f]));
+    renderVideos();
+  } catch { /* Reviews are optional; collection, playback and audio remain available. */ }
+}
+function reviewSnippet(video) {
+  const review=state.reviews.get(String(video.video_id));
+  const link=video.collection_link;
+  const badge=link?`<p class="review-collection-link">${link.retention_available?'已关联采集留存':'已关联采集记录'} · ${esc(String(link.collected_at||'').slice(0,10))}</p>`:'';
+  const inputs=`<button class="video-review-button" data-review-inputs="${esc(video.video_id)}">补充数据 · 留存 / 出单</button>`;
+  if(!review)return badge+inputs;
+  return badge+`<section class="video-review"><strong>复盘摘要</strong><p>${esc(review.review_summary||'已有复盘，可直接查看')}</p><small>依据 ${esc(String(review.review_collected_at||'未标注采集时间').slice(0,10))} 的历史指标。</small></section>`+inputs;
+}
 const tableCacheKey="video-table-targets-v1";
 const videoTableNames=["视频数据表-鹏飞","视频数据表-丽娜","视频数据表-小周"];
 let tableRequest=null;
@@ -72,7 +91,7 @@ async function loadVideos() {
 }
 function card(v) {
   const p=current();const stats=[["views","播放"],["likes","点赞"],["comments","评论"],["shares","分享"],["saves","收藏"]];
-  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
+  return `<article class="video-card"><button class="video-cover" data-media="${esc(v.video_id)}" aria-label="查看视频：${esc(v.title||v.video_id)}">${v.cover_url?image(p,v):'<span class="cover-empty">暂无封面</span>'}<span class="play-icon" aria-hidden="true">▷</span>${v.downloaded?'<span class="download-badge">已缓存</span>':""}<span class="cover-meta"><span>${date(v.published_at)}</span><span>${Math.round(v.duration||0)}s</span></span></button><div class="video-body"><div class="video-author">${esc(v.author||"未知作者")}</div><h4 class="video-title">${esc(v.title||"无标题视频")}</h4><div class="video-stats">${stats.map(([key,label])=>`<div><b>${fmt(v[key])}</b><span>${label}</span></div>`).join("")}<div><b>${v.duration?Math.round(v.duration)+"s":"—"}</b><span>时长</span></div></div>${reviewSnippet(v)}<button class="video-review-button" data-review="${esc(v.video_id)}">内容复盘</button><div class="video-actions"><a href="${esc(url(v.url))}" target="_blank" rel="noopener noreferrer">原视频 ↗</a><button data-refresh="${esc(v.video_id)}" ${busy()?"disabled":""}>更新数据</button><button data-media="${esc(v.video_id)}">播放 / 音频</button></div><div class="video-time">${v.updated_at?"详细数据更新于 "+date(v.updated_at,true):"基础数据获取于 "+date(v.basic_updated_at,true)}</div>${v.error?`<div class="video-error">${esc(v.error)}</div>`:""}</div></article>`;
 }
 function renderSelection() {
   $("toggleSelection").textContent=state.selecting?"取消多选":"多选";
@@ -214,10 +233,235 @@ async function renderMedia() {
   $("extractAudio").disabled=busy()||Boolean(media.translation);$("extractAudio").textContent=media.translation?"✓ 翻译已完成":media.transcript?"继续翻译":"提取音频并翻译";
   state.mediaState=media;
 }
+function reviewText(value) {
+  if(Array.isArray(value))return value.map(reviewText).join("；");
+  if(value&&typeof value==="object")return Object.entries(value).map(([k,v])=>{
+    const timeLabel={start:'开始',end:'结束',timestamp_seconds:'时间'}[k];
+    return timeLabel&&typeof v==='number'?`${timeLabel}：${reviewSeconds(v)}秒`:`${k}：${reviewText(v)}`;
+  }).join("\n");
+  const evidence=state.review?.report?.['证据时间轴'];
+  const readable=String(value??"").replace(/\b(r\d+|t\d+|frame_\d+)\b/g,id=>{
+    const window=evidence?.retention_windows.find(w=>w.id===id);
+    if(window)return `${reviewSeconds(window.start_seconds)}–${reviewSeconds(window.end_seconds)}秒`;
+    const row=evidence?.timeline.find(r=>r.id===id);
+    if(row)return `${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒`;
+    const frame=evidence?.timeline.flatMap(r=>r.visuals).find(f=>f.frame_id===id);
+    return frame?`${reviewSeconds(frame.seconds)}秒画面`:id;
+  });
+  return readable.replace(/(\d+(?:\.\d+)?)(\s*(?:–|—|-|→|至)\s*)(\d+(?:\.\d+)?)(\s*秒)/g,
+    (_,start,separator,end)=>`${reviewSeconds(start)}–${reviewSeconds(end)}秒`)
+    .replace(/\d+\.\d+(?=\s*秒)/g,reviewSeconds);
+}
+function reviewSeconds(value) {return String(Number(Number(value).toFixed(1)));}
+function reviewFields(value) {
+  const labels={play_count:'播放量',avg_watch_time:'平均观看时长',completion_rate:'完播率',可能原因:'可能原因 · 待验证'};
+  return Object.entries(value||{}).map(([k,v])=>`<p><strong>${esc(labels[k]||k)}</strong><span>${esc(reviewText(v))}</span></p>`).join("");
+}
+function showReview(report, videoURL) {
+  state.review.report=report;
+  const source=report['采集数据来源']||{};
+  const section=(title,items)=>Array.isArray(items)&&items.length?`<section><h3>${title}</h3>${items.map(item=>`<article class="native-review-card">${reviewFields(item)}</article>`).join("")}</section>`:"";
+  $("nativeReviewResult").innerHTML=`<div class="native-review-summary"><h3>复盘要点</h3><p>${esc(reviewText(report.summary))}</p><button id="copyNativeReview">复制要点</button></div>${source.overview?`<details class="native-review-data"><summary>本次依据的表现数据 · ${esc(String(source.collected_at||'采集时间未知').slice(0,10))}</summary>${reviewFields(source.overview)}</details>`:""}${section('表现诊断',report['表现诊断'])}${section('优先调整',report['优先修改'])}<details><summary>内容与镜头细节</summary>${reviewFields(report['内容拆解'])}${section('原片镜头拆解',report['原片镜头拆解'])}</details><details><summary>数据范围与判断限制</summary><p>${esc(reviewText(report['数据限制']))}</p></details>`;
+  if(videoURL)$("nativeReviewPreview").innerHTML=`<video controls playsinline preload="metadata" src="${esc(videoURL)}"></video>`;
+  state.review.report=report;
+  if(source.title)$("nativeReviewCaption").textContent=source.title;
+  if(report['证据时间轴'])showEvidenceReview(report);
+  else $("nativeReviewResult").insertAdjacentHTML('beforeend','<button id="regenerateNativeReview" class="primary">更新为时间轴复盘</button>');
+  if(source.manual_orders)$("nativeReviewResult").insertAdjacentHTML('afterbegin',`<p class="job-status">人工补充：累计出单 ${esc(source.manual_orders.count)} 单 · 填写于 ${esc(source.manual_orders.recorded_at)}。与历史留存非同一快照。</p>`);
+}
+function evidenceRefs(ids) {
+  const rows=state.review.report['证据时间轴'].timeline;
+  return (ids||[]).map(id=>{const row=rows.find(r=>r.id===id);return row?`<button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button>`:'';}).join(' ');
+}
+function showEvidenceReview(report) {
+  const evidence=report['证据时间轴'],logic=report['视频逻辑'],rows=evidence.timeline;
+  const chain=logic['推进'].map(beat=>`<article class="native-review-card"><button class="review-seek" data-review-seek="${beat.start}">依据 ${reviewSeconds(beat.start)}–${reviewSeconds(beat.end)}秒 ↗</button>${reviewFields({事件:beat['事件'],逻辑作用:beat['逻辑作用'],承接:beat['承接']})}</article>`).join('');
+  const table=rows.map(row=>{
+    const beats=logic['推进'].filter(b=>b['依据'].includes(row.id)).map(b=>({...b,逻辑作用:reviewText(b['逻辑作用'])}));
+    const values=row.retention;
+    const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
+    const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';
+    const unique=row.visuals.filter((f,i,a)=>i===0||f.text!==a[i-1].text);
+    const preview=(unique.length>1?[unique[0],unique.at(-1)]:unique).map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text.length>55?f.text.slice(0,55)+'…':f.text)}</p>`).join('')||'<p>此秒无采样帧</p>';
+    return `<tr id="review-row-${row.id}"><td><button class="review-seek" data-review-seek="${row.start}">${reviewSeconds(row.start)}–${reviewSeconds(row.end)}秒 ↗</button></td><td>${preview}${row.speech.map(s=>`<p><small>语音原文${s.precision==='segment'?' · 整段引用':''}</small> ${esc(s.text)}</p>`).join('')}<details><summary>展开 ${row.visuals.length} 张采样证据</summary>${visuals}</details></td><td>${beats.map(b=>`<p>${esc(b['逻辑作用'])}</p>`).join('')||'未标注逻辑作用'}</td><td>${retention}</td></tr>`;
+  }).join('');
+  const contexts=ids=>(ids||[]).map(id=>{
+    const row=rows.find(r=>r.id===id);if(!row)return '';
+    return `<div class="review-context-row">${evidenceRefs([id])}<details><summary>查看画面与口播</summary>${row.visuals.map(f=>`<p>${reviewSeconds(f.seconds)}秒：${esc(f.text)}</p>`).join('')||'<p>无采样帧</p>'}${row.speech.map(s=>`<p><strong>${s.precision==='segment'?'整段引用 · '+reviewSeconds(s.start)+'–'+reviewSeconds(s.end)+'秒':'该秒语音原文'}</strong>${esc(s.text)}</p>`).join('')}</details></div>`;
+  }).join('');
+  const windows=evidence.retention_windows.map(w=>`<article class="native-review-card"><h4>${esc(w.label)} · ${w.start_seconds}–${w.end_seconds}秒</h4><p>${w.start_percent}% → ${w.end_percent}% · ${w.drop_percentage_points<0?'回升':'下降'} ${reviewSeconds(Math.abs(w.drop_percentage_points))} 个百分点</p><div class="review-context"><section><strong>变化前</strong>${contexts(w.before)||'<p>已在开头，无前段。</p>'}</section><section><strong>变化中</strong>${contexts(w.during)}</section><section><strong>变化后</strong>${contexts(w.after)||'<p>已到片尾。</p>'}</section></div></article>`).join('');
+  const judgmentCard=j=>`<article class="native-review-card"><span class="review-judgment">${esc(j['判断'])}</span><h4>${esc(reviewText(j['要点']))}</h4><p>${esc(reviewText(j['解释']))}</p>${evidenceRefs(j['依据'])}</article>`;
+  const judgments=report['逻辑合理性'].slice(0,4).map(judgmentCard).join('')+(report['逻辑合理性'].length>4?`<details><summary>更多待核实判断</summary>${report['逻辑合理性'].slice(4).map(judgmentCard).join('')}</details>`:'');
+  const analyses=report['留存分析'].map(a=>{const w=evidence.retention_windows.find(w=>w.id===a['区间ID']);return `<article class="native-review-card"><h4>${esc(w?.label||'')} · ${w?.start_seconds}–${w?.end_seconds}秒</h4>${reviewFields({解释候选:a['解释候选'],其他解释:a['其他解释'],证据强度:a['证据强度']})}${evidenceRefs(a['依据'])}</article>`;}).join('');
+  const source=report['采集数据来源']||{};
+  $("nativeReviewResult").innerHTML=`<section><h3>1. 视频逻辑与统一时间轴</h3>${reviewFields({核心表达:logic['核心表达'],主体与道具:logic['主体与道具']})}<details open><summary>剧情与信息推进</summary>${chain}</details><details open><summary>逐秒证据与留存 · 点击时间回看</summary><div class="review-table-scroll"><table class="review-timeline"><thead><tr><th>时间</th><th>画面与口播事实</th><th>逻辑作用 · 模型理解</th><th>留存</th></tr></thead><tbody>${table}</tbody></table></div></details></section><section><h3>2. 留存变化与画面前后文</h3><p class="review-note">前后文是时间关系，不代表已经证明因果。相对平稳也不代表内容优秀。</p>${windows||'<div class="job-status">未提供有效逐秒留存，无法对齐变化区间。播放和互动不替代留存。</div>'}</section><section><h3>3. 逻辑合理性判断</h3>${judgments}</section><section><h3>4. 留存分析</h3>${analyses||'<p>缺少留存数据，本次不作留存归因。</p>'}</section><details><summary>可尝试的方向 · 由你判断</summary>${report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields(d)}</article>`).join('')||'暂无充分依据提出调整方向。'}</details><details><summary>数据与判断范围</summary><p>采集时间：${esc(source.collected_at||'未知')}</p>${reviewFields(source.overview)}<p>${esc(reviewText(report['数据限制']))}</p><p>${esc(reviewText(logic['待核实']))}</p></details><details><summary>补充或纠正视频逻辑</summary><p class="review-note">你的解释会单独保存，重新分析会复用已提取的视频证据。</p><label for="nativeLogicNote">主推商品、剧情含义或需要纠正的理解</label><textarea id="nativeLogicNote" maxlength="4000" rows="4">${esc(report['人工补充']||'')}</textarea><button id="regenerateNativeReview" class="primary">按补充重新分析</button><p id="nativeCorrectionStatus" role="status"></p></details><button id="copyNativeReview">复制复盘要点</button>`;
+  $("nativeReviewResult").querySelector('details').open=false;
+  $("nativeReviewResult").querySelectorAll('details').forEach(details=>{
+    if(details.querySelector(':scope > summary')?.textContent==='可尝试的方向 · 由你判断'){
+      details.innerHTML='<summary>可尝试的方向 · 由你判断</summary>'+report['可尝试方向'].map(d=>`<article class="native-review-card">${reviewFields({方向:d['方向'],保留:d['保留'],验证:d['验证'],限制:d['限制']})}${evidenceRefs(d['依据'])}</article>`).join('');
+    }
+  });
+  const result=$("nativeReviewResult"),detail=document.createElement('details');
+  detail.className='review-deep-dive';detail.innerHTML='<summary>展开完整复盘与逐秒证据</summary>';
+  [...result.children].filter(node=>node.id!=='copyNativeReview').forEach(node=>detail.appendChild(node));
+  result.prepend(detail);
+  const main=[...evidence.retention_windows].filter(w=>w.drop_percentage_points>0).sort((a,b)=>b.drop_percentage_points-a.drop_percentage_points)[0];
+  result.insertAdjacentHTML('afterbegin',`<section class="native-review-summary"><h3>复盘重点</h3><p>${esc(reviewText(report.summary))}</p>${main?`<p class="review-note">数据依据：${reviewSeconds(main.start_seconds)}–${reviewSeconds(main.end_seconds)}秒，留存 ${main.start_percent}% → ${main.end_percent}%（下降 ${reviewSeconds(main.drop_percentage_points)} 个百分点）。</p>${evidenceRefs(main.during)}`:''}</section>`);
+  result.querySelector('.native-review-summary').insertAdjacentHTML('beforeend','<p class="review-note">流失解释与调整方向仍需对照验证。</p>');
+}
+async function reviseReview() {
+  const ref=state.review,note=$("nativeLogicNote")?.value.trim()||'';
+  let pid=ref.pid,vid=ref.vid;
+  if(!pid&&ref.filename){vid=state.savedReviews.find(f=>f.name===ref.filename)?.review_video_id;pid=state.selected;}
+  if(!pid||!vid)throw new Error('请从所属账号或商品的视频卡片打开，再补充逻辑。');
+  const token=state.reviewSeq;$("regenerateNativeReview").disabled=true;
+  try {
+    const job=await api('/api/product-videos/jobs',{action:'review',product_id:pid,video_id:String(vid),force:true,logic_note:note});
+    if(token!==state.reviewSeq)return;
+    if(job.action!=='review'||job.video_id!==String(vid)){toast('当前有其他任务，请完成后再提交补充。');return;}
+    state.review={pid,vid:String(vid)};$("nativeReviewResult").innerHTML='';await pollReview(token);
+  }finally{if($("regenerateNativeReview"))$("regenerateNativeReview").disabled=false;}
+}
+function reviewFailure(error) {$("nativeReviewStatus").textContent=error.message||"暂时无法读取复盘，请重试。";$("nativeReviewRetry").hidden=false;}
+async function copyReview() {
+  const report=state.review.report;
+  const text=reviewText(report['证据时间轴']?{复盘要点:report.summary,视频逻辑:report['视频逻辑'],逻辑合理性:report['逻辑合理性'],留存数据:report['证据时间轴'].retention_windows,留存分析:report['留存分析'],可尝试方向:report['可尝试方向']}: {复盘要点:report.summary,表现诊断:report['表现诊断'],优先调整:report['优先修改']});
+  if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text);
+  else {const field=document.createElement('textarea');field.value=text;$("reviewDialog").appendChild(field);field.select();const copied=document.execCommand('copy');field.remove();if(!copied)throw new Error('复制失败，请选中复盘文字复制。');}
+  toast("复盘要点已复制");
+}
+async function pollReview(token, start=false) {
+  const ref=state.review;if(!ref||token!==state.reviewSeq||!$("reviewDialog").open)return;
+  try {
+    const result=await api(endpoint("review",ref.pid,ref.vid));
+    if(token!==state.reviewSeq||!$("reviewDialog").open)return;
+    $("nativeReviewStatus").textContent=result.message;$("nativeReviewRetry").hidden=true;
+    if(result.status==="ready"){showReview(result.report,result.video_url);loadReviewLinks();return;}
+    if(result.status==="failed"&&!start){$("nativeReviewRetry").hidden=false;return;}
+    if(["missing","failed"].includes(result.status)) {
+      await api("/api/product-videos/jobs",{action:"review",product_id:ref.pid,video_id:ref.vid});
+      if(token!==state.reviewSeq)return;
+      $("nativeReviewStatus").textContent="正在生成复盘，关闭窗口后仍会继续。";
+    }
+    state.reviewTimer=setTimeout(()=>pollReview(token),2500);
+  } catch(error){if(token===state.reviewSeq)reviewFailure(error);}
+}
+function prepareReview(caption) {
+  clearTimeout(state.reviewTimer);state.reviewSeq++;
+  $("nativeReviewCaption").textContent=caption;$("nativeReviewResult").innerHTML="";$("nativeReviewPreview").innerHTML="";
+  $("nativeReviewRetry").hidden=true;$("nativeReviewStatus").textContent="正在读取复盘…";
+  if($("mediaDialog").open)$("mediaDialog").close();
+  if(!$("reviewDialog").open)$("reviewDialog").showModal();
+}
+async function openReviewInputs(vid) {
+  const video=state.videos.find(v=>String(v.video_id)===String(vid));if(!video)return;
+  clearTimeout(state.inputsTimer);
+  const ref=state.inputs={pid:state.selected,vid:String(vid),allowed:false,savedCount:"",busy:false};
+  $("reviewInputsCaption").textContent=video.title||vid;
+  $("manualOrders").value="";$("manualOrdersTime").textContent="";
+  $("reviewInputsHint").textContent="正在读取补充数据…";
+  $("reviewCollectionStatus").textContent="";
+  $("collectReviewRetention").disabled=true;
+  $("saveManualOrders").disabled=true;$("reviewAfterInputs").disabled=true;
+  $("reviewInputsDialog").showModal();
+  const data=await api(endpoint('review-inputs',ref.pid,ref.vid));if(state.inputs!==ref)return;
+  ref.savedCount=data.manual_orders?.count==null?"":String(data.manual_orders.count);
+  $("manualOrders").value=ref.savedCount;
+  $("saveManualOrders").disabled=false;
+  $("manualOrdersTime").textContent=data.manual_orders?`保存于 ${data.manual_orders.recorded_at.slice(0,16).replace('T',' ')} UTC · 人工累计数据`:"尚未补充";
+  $("reviewCollectionAccount").textContent=data.collection_allowed?`使用 @${data.collection_account} 绑定的 IP，仅采集当前视频并保存到本地。`:data.collection_error;
+  $("reviewInputsHint").textContent="两项都可选；保存后复盘会使用最新补充。";
+  updateReviewCollection(data,ref);
+}
+function updateReviewCollection(data,ref) {
+  const job=data.collection_job;
+  ref.allowed=!!data.collection_allowed;
+  ref.active=!!job&&['queued','delayed','preparing','collecting','retrying'].includes(job.status);
+  const link=data.collection_link;
+  $("reviewCollectionStatus").textContent=job?`${job.status_label} · ${job.completed_videos}/${job.total_videos||'?'}${job.last_error?' · '+job.last_error:job.status_detail?' · '+job.status_detail:''}`:link?`${link.retention_available?'已有留存':'已有采集记录，留存不完整'} · ${String(link.collected_at||'').slice(0,10)}`:"尚未采集留存";
+  $("collectReviewRetention").disabled=ref.active||!ref.allowed||ref.busy;
+  $("reviewAfterInputs").disabled=ref.active||ref.busy;
+  if(ref.active){
+    clearTimeout(state.inputsTimer);
+    state.inputsTimer=setTimeout(async()=>{
+      if(state.inputs!==ref||!$("reviewInputsDialog").open)return;
+      try{const next=await api(endpoint('review-inputs',ref.pid,ref.vid));if(state.inputs===ref)updateReviewCollection(next,ref);}catch(error){if(state.inputs===ref)$("reviewInputsHint").textContent=error.message;}
+    },3000);
+  }
+}
+async function saveReviewOrders() {
+  const ref=state.inputs;if(!ref)return;
+  if(ref.busy)throw new Error('正在保存或提交，请稍候');
+  const value=$("manualOrders").value.trim();
+  if(value&&!/^\d+$/.test(value))throw new Error('出单数量需为非负整数');
+  ref.busy=true;$("saveManualOrders").disabled=true;$("reviewAfterInputs").disabled=true;
+  try {
+    const result=await api('/api/product-videos/orders',{product_id:ref.pid,video_id:ref.vid,count:value===''?null:Number(value)});
+    if(state.inputs!==ref)return;
+    ref.savedCount=value;
+    $("manualOrdersTime").textContent=result.manual_orders?`已保存累计 ${result.manual_orders.count} 单 · 人工填写`:"已清除，出单数量未知";
+    $("reviewInputsHint").textContent="已保存，下次复盘将使用本次补充。";
+  } finally {
+    ref.busy=false;
+    if(state.inputs===ref){$("saveManualOrders").disabled=false;$("reviewAfterInputs").disabled=ref.active;}
+  }
+}
+async function collectReviewRetention() {
+  const ref=state.inputs;if(!ref||ref.busy||ref.active)return;
+  if(!ref.allowed)throw new Error('视频所属账号尚未满足采集条件');
+  ref.busy=true;$("collectReviewRetention").disabled=true;$("reviewAfterInputs").disabled=true;
+  try {
+    await api('/api/product-videos/collect-retention',{product_id:ref.pid,video_id:ref.vid});
+    if(state.inputs!==ref)return;
+    $("reviewInputsHint").textContent="已加入 Proxy 采集队列；完成后可生成复盘，关闭窗口也会继续。";
+    const data=await api(endpoint('review-inputs',ref.pid,ref.vid));ref.busy=false;if(state.inputs===ref)updateReviewCollection(data,ref);
+  } finally {ref.busy=false;if(state.inputs===ref){$("collectReviewRetention").disabled=ref.active||!ref.allowed;$("reviewAfterInputs").disabled=ref.active;}}
+}
+$("reviewInputsDialog").addEventListener('close',()=>{clearTimeout(state.inputsTimer);state.inputs=null;});
+async function openReview(vid) {
+  const video=state.videos.find(v=>String(v.video_id)===String(vid));if(!video)return;
+  prepareReview(video.title||"无标题视频");state.review={pid:state.selected,vid:String(vid)};
+  $("nativeReviewSaved").hidden=true;
+  $("nativeReviewPreview").innerHTML=image(current(),video,false);
+  await pollReview(state.reviewSeq);
+}
+async function openSavedReview(name) {
+  if(!state.savedReviews.length){toast("暂无已生成的复盘，请点击视频卡片上的内容复盘。");return;}
+  const file=state.savedReviews.find(f=>f.name===name)||state.savedReviews[0];
+  prepareReview(file.review_summary||"已有视频复盘");state.review={filename:file.name};const token=state.reviewSeq;
+  $("nativeReviewSaved").hidden=false;$("nativeReviewSaved").innerHTML=state.savedReviews.map((f,i)=>`<option value="${esc(f.name)}">视频 ${i+1} · ${esc(f.review_summary||f.name)}</option>`).join("");$("nativeReviewSaved").value=file.name;
+  try {const result=await api('/api/result?filename='+encodeURIComponent(file.name));if(token!==state.reviewSeq)return;
+    const report=result.assisted_review||result.audit_result||result.audit_result_zh;if(!report)throw new Error("复盘结果暂时不可用，请重试。");
+    showReview(report,'/video/'+encodeURIComponent(file.name));$("nativeReviewStatus").textContent="复盘已完成 · 数据来自采集时的历史快照。";
+  }catch(error){if(token===state.reviewSeq)reviewFailure(error);}
+}
+$("nativeReviewSaved").addEventListener("change",()=>openSavedReview($("nativeReviewSaved").value));
+$("reviewDialog").addEventListener("close",()=>{clearTimeout(state.reviewTimer);state.reviewSeq++;$("nativeReviewPreview").querySelectorAll("video").forEach(v=>v.pause());state.review=null;});
+document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("afterbegin",'<button id="mediaReviewButton" class="primary">内容复盘</button>');
 document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event.target.replaceWith(Object.assign(document.createElement("span"),{textContent:"暂无图片"}));}},true);
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
+    if(target.hasAttribute('data-review-seek')){
+      const video=$("nativeReviewPreview").querySelector('video');if(!video)throw new Error('视频暂不可播放');
+      const seconds=Number(target.dataset.reviewSeek);const seek=()=>{video.currentTime=seconds;video.play().catch(()=>toast('已定位画面，点击播放即可。'));};
+      if(video.readyState>=1)seek();else video.addEventListener('loadedmetadata',seek,{once:true});
+      $("nativeReviewPreview").scrollIntoView({block:'nearest'});return;
+    }
+    if(target.id==='regenerateNativeReview')return reviseReview();
+    if(target.dataset.reviewInputs)return openReviewInputs(target.dataset.reviewInputs);
+    if(target.id==='saveManualOrders')return saveReviewOrders();
+    if(target.id==='collectReviewRetention')return collectReviewRetention();
+    if(target.id==='reviewAfterInputs'){
+      const ref=state.inputs;if(!ref)return;
+      if($("manualOrders").value.trim()!==ref.savedCount)await saveReviewOrders();
+      $("reviewInputsDialog").close();await loadVideos();return openReview(ref.vid);
+    }
+    if(target.dataset.review)return openReview(target.dataset.review);
+    if(target.id==="mediaReviewButton")return openReview(state.media.video_id);
+    if(target.id==="reviewLibraryLink")return openSavedReview();
+    if(target.id==="nativeReviewRetry"){target.hidden=true;return state.review.filename?openSavedReview(state.review.filename):pollReview(state.reviewSeq,true);}
+    if(target.id==="copyNativeReview")return copyReview();
     if(target.id==="toggleSelection"){state.selecting=!state.selecting;state.checked.clear();renderSelection();return;}
     if(target.id==="refreshTables")return loadTables(true);
     if(target.id==="confirmTable")return writeTable();
@@ -241,3 +485,5 @@ $("batchAction").addEventListener("change",()=>{if($("batchAction").value==="wri
 $("tableChoice").addEventListener("change",tableChoiceChanged);
 $("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
 switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
+loadReviewLinks();
+$("reloadProducts").addEventListener("click", loadReviewLinks);

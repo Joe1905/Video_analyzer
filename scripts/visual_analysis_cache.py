@@ -3,6 +3,7 @@ import json
 import uuid
 from pathlib import Path
 from viral_elements import require_visual_evidence, ViralElementError
+from standardize_analysis import EVIDENCE_VERSION, standardize_analyzer
 
 ANALYSIS_FILES = ('analysis_zh.json', 'analysis.json', 'direct_analysis_zh.json', 'direct_analysis.json')
 
@@ -11,6 +12,12 @@ def valid_analysis(path):
         data = Path(path).read_text(encoding='utf-8')
         source = json.loads(data)
         if not isinstance(source, dict):
+            return None
+        if (source.get("processing_mode") == "analyzer"
+                and source.get("metadata", {}).get("evidence_version") != EVIDENCE_VERSION
+                and isinstance(source.get("raw_model_output"), dict)):
+            source = standardize_analyzer(source["raw_model_output"], Path(path).parent, None)
+        if source.get("metadata", {}).get("extraction_quality") == "partial":
             return None
         require_visual_evidence(source)
         return source

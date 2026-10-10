@@ -11,13 +11,15 @@ from typing import Any
 
 import requests
 from api_cache import record_api_call
+from standardize_analysis import EVIDENCE_VERSION, standardize_analyzer
 from video_performance_context import (REPORT_INSTRUCTIONS, REPORT_VERSION, external_video_id,
-                                       load_performance_context, validate_report)
+                                       load_performance_context, validate_report, build_report_facts, validate_edit_plan)
+from shot_analysis import analyze_shots
 
 
 DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_MAX_TOKENS = 8192
+DEFAULT_MAX_TOKENS = 32768
 
 
 def normalize_chat_completions_url(api_url: str) -> str:
@@ -48,6 +50,11 @@ def compact_transcript(transcript: Any) -> dict:
         "text": truncate_text(transcript.get("text", ""), 6000),
         "language": transcript.get("language"),
         "successful": transcript.get("successful", transcript.get("success")),
+        "segments": [{k: item[k] for k in ("start", "end", "text") if k in item}
+                     for item in transcript.get("segments", []) if isinstance(item, dict)],
+        "words": [{k: word[k] for k in ("word", "start", "end") if k in word}
+                  for item in transcript.get("segments", []) if isinstance(item, dict)
+                  for word in item.get("words", []) if isinstance(word, dict)],
     }
 
 
@@ -67,6 +74,12 @@ def compact_items(value: Any, limit: int = 80) -> Any:
 
 def compact_analysis(analysis: dict) -> dict:
     metadata = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+    if (analysis.get("processing_mode") == "analyzer" and metadata.get("evidence_version") != EVIDENCE_VERSION
+            and isinstance(analysis.get("raw_model_output"), dict)):
+        analysis = standardize_analyzer(analysis["raw_model_output"], Path("."), None)
+        analysis["metadata"]["duration_seconds"] = metadata.get("duration_seconds")
+        metadata = analysis["metadata"]
+    structured = metadata.get("evidence_version") == EVIDENCE_VERSION
     return {
         "schema_version": analysis.get("schema_version"),
         "processing_mode": analysis.get("processing_mode"),
@@ -77,11 +90,18 @@ def compact_analysis(analysis: dict) -> dict:
             "duration_processed": metadata.get("duration_processed"),
             "duration_seconds": metadata.get("duration_seconds"),
             "audio_language": metadata.get("audio_language"),
+            "extraction_quality": metadata.get("extraction_quality"),
+            "evidence_issues": metadata.get("evidence_issues", []),
+            "coverage_note": metadata.get("coverage_note"),
+            "sampling_coverage": metadata.get("sampling_coverage"),
+            "summary_source": metadata.get("summary_source"),
         },
         "summary": truncate_text(analysis.get("summary", ""), 6000),
+        "evidence_overview": analysis.get("evidence_overview"),
+        "shot_evidence": analysis.get("shot_evidence"),
         "transcript": compact_transcript(analysis.get("transcript")),
-        "timeline": compact_items(analysis.get("timeline")),
-        "visual_evidence": compact_items(analysis.get("visual_evidence")),
+        "timeline": analysis.get("timeline") if structured else compact_items(analysis.get("timeline")),
+        "visual_evidence": [] if structured else compact_items(analysis.get("visual_evidence")),
     }
 
 
@@ -108,6 +128,8 @@ def build_prompt(analysis: dict, user_prompt: str = "", performance: dict | None
         + "\n\nProxy采集证据（available=false时不得补造指标）：\n"
         + json.dumps(performance or {"available": False, "limitations": ["未提供表现数据"]},
                      ensure_ascii=False, indent=2)
+        + "\n\n脚本事实摘要（不包含内容归因）：\n"
+        + json.dumps(build_report_facts(analysis, performance), ensure_ascii=False, indent=2)
     )
 
 
@@ -139,6 +161,7 @@ def call_deepseek(
     }
     if reasoning_effort and reasoning_effort != "disabled":
         payload["reasoning_effort"] = reasoning_effort
+        payload["thinking"] = {"type": "enabled"}
     if reasoning_effort == "disabled":
         payload["thinking"] = {"type": "disabled"}
 
@@ -149,7 +172,7 @@ def call_deepseek(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=120,
+        timeout=600 if reasoning_effort and reasoning_effort != "disabled" else 120,
     )
     response.raise_for_status()
     data = response.json()
@@ -226,10 +249,15 @@ def main() -> int:
         "--max-tokens",
         type=int,
         default=int(os.getenv("DEEPSEEK_POSTPROCESS_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
-        help="Maximum DeepSeek output tokens for audit JSON.",
+        help="Maximum combined reasoning and audit JSON output tokens.",
     )
+    parser.add_argument("--reasoning-effort", choices=("disabled", "low", "high", "max"),
+                        default="high", help="Report analysis thinking effort (default: high).")
     parser.add_argument("--video-id", default="", help="Exact external TikTok video ID for collected evidence.")
     parser.add_argument("--video-filename", default="", help="Original local media filename for duration probing.")
+    parser.add_argument("--performance-context", default="", help="Saved library metrics fallback when Proxy evidence is unavailable.")
+    parser.add_argument('--review-format', choices=['legacy','evidence'], default='legacy')
+    parser.add_argument('--logic-note', default='', help='User interpretation, kept separate from observed evidence.')
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -247,23 +275,101 @@ def main() -> int:
         media_name = Path(args.video_filename or analysis_path.parent.name).name
         metadata["duration_seconds"] = video_duration(Path.cwd() / "videos" / media_name)
         analysis["metadata"] = metadata
+        # Evidence reviews use verified events below, not the legacy shot/edit-plan path.
+        # Keep existing shot artifacts intact; only legacy reviews need to regenerate them.
+        analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name) if args.review_format == 'legacy' else {'shots': []}
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
-        api_response = call_deepseek(
-            api_key=api_key,
-            prompt=build_prompt(analysis, args.prompt, performance),
-            api_url=args.api_url,
-            model=args.model,
-            max_tokens=args.max_tokens,
-            reasoning_effort="disabled",
-        )
-        content = extract_content(api_response)
-        audit_result = parse_json_content(content)
-        validate_report(audit_result)
-        audit_result["report_version"] = REPORT_VERSION
-        audit_result["采集数据来源"] = performance
-
+        if not performance.get("available") and args.performance_context:
+            fallback = load_analysis(Path(args.performance_context))
+            if fallback.get('source') not in ('video_library','saved_review') or str(fallback.get('video_id')) != str(video_id):
+                raise ValueError('视频列表指标与当前视频不匹配')
+            fallback['manual_orders'] = performance.get('manual_orders')
+            performance = fallback
+        prompt = build_prompt(analysis, args.prompt, performance)
+        evidence = None
+        if args.review_format == 'evidence':
+            import assisted_video_review as assisted
+            from event_analysis import analyze_events, observed_events
+            event_evidence = analyze_events(analysis, analysis_path.parent)
+            verified_frames = {f['frame_id']:f['observed'] for f in event_evidence.get('frame_observations',[])}
+            analysis['timeline'] = sorted(analysis.get('timeline',[]) + [
+                {k:v for k,v in f.items() if k != '_image_path'} for f in event_evidence.get('supplemental_frames',[])],
+                key=lambda f:f['timestamp_seconds'])
+            for frame in analysis['timeline']:
+                if frame['evidence_id'] in verified_frames:frame['visual']=verified_frames[frame['evidence_id']]
+            evidence = assisted.build_evidence(analysis, build_report_facts(analysis, performance))
+            blind_evidence = assisted.build_logic_evidence(analysis)
+            # Frame prose and shot function guesses remain in the source artifacts,
+            # but only visually rechecked observations enter narrative reasoning.
+            events = observed_events(event_evidence)
+            prompt = assisted.INSTRUCTIONS + '\n本阶段只梳理内容，尚未读取表现数据。留存分析必须为空。' + \
+                ('可尝试方向必须为空，下一阶段结合实际数据生成。' if evidence['retention_windows'] else '可尝试方向只基于内容，不对业务数据可用性下结论。') + \
+                '本阶段不读取指标不等于系统没有指标，不得写没有留存、播放等数据。' + \
+                '数据限制只写证据本身的局限，不写本阶段流程、留存字段为空或不生成留存结论；报告随后会补入真实数据分析。' + \
+                '区分可见事件、剧情表达意图与现实商品能力；不能因为无法验证真实能力而否定剧情表达。' + \
+                'uncertain和contradicted事件只能使用核验后的observed，不恢复先前猜测；表达假设不是事实。' + \
+                '每个动作必须对应事件的前后帧，静态位置不能改写为动作。不要补播放、留存等数字。\n核验后的跨镜头事件：\n' + \
+                json.dumps(events,ensure_ascii=False) + '\n核验逐帧观察（时间见脚本证据）：\n' + \
+                json.dumps(event_evidence.get('frame_observations',[]),ensure_ascii=False) + '\n原始ASR（按时间归属，不提前使用后续口播）：\n' + \
+                json.dumps(analysis.get('transcript',{}),ensure_ascii=False) + \
+                '\n脚本证据：\n' + json.dumps(blind_evidence,ensure_ascii=False) + \
+                '\n用户补充（用户判断，不能覆盖原片事实）：\n' + args.logic_note[:4000]
         output_path = Path(args.output) if args.output else analysis_path.parent / "audit_result.json"
+        for attempt in range(2):
+            api_response = call_deepseek(api_key=api_key, prompt=prompt, api_url=args.api_url,
+                model=args.model, max_tokens=args.max_tokens, reasoning_effort=args.reasoning_effort)
+            content = extract_content(api_response)
+            try:
+                audit_result = parse_json_content(content)
+                if evidence is not None:
+                    assisted.ground_logic(audit_result,blind_evidence)
+                    assisted.validate(audit_result, blind_evidence)
+                else:
+                    validate_report(audit_result)
+                    validate_edit_plan(audit_result, analysis)
+                break
+            except ValueError as error:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.with_name(output_path.stem + f".attempt{attempt+1}.txt").write_text(content, encoding="utf-8")
+                if attempt:
+                    raise
+                print(f"Report validation rejected first attempt: {error}; regenerating once", flush=True)
+                prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
+        if evidence is not None and evidence['retention_windows']:
+            focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance,events,
+                event_evidence.get('frame_observations',[]),audit_result['逻辑合理性'])
+            for attempt in range(2):
+                focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
+                    model=args.model,max_tokens=args.max_tokens,reasoning_effort=args.reasoning_effort)
+                focused_content=extract_content(focused_response)
+                try:
+                    focused=parse_json_content(focused_content)
+                    if not isinstance(focused.get('可尝试方向'), list):
+                        raise ValueError('数据分析阶段缺少调整方向')
+                    candidate=dict(audit_result,summary=focused.get('summary'),留存分析=focused.get('留存分析'),可尝试方向=focused['可尝试方向'])
+                    assisted.validate(candidate,evidence)
+                    audit_result=candidate
+                    break
+                except ValueError as error:
+                    output_path.with_name(output_path.stem+f'.retention_attempt{attempt+1}.txt').write_text(focused_content,encoding='utf-8')
+                    if attempt:raise
+                    focused_prompt+='\n校验失败，请严格纠正：'+str(error)
+        if evidence is not None and not evidence['retention_windows']:
+            audit_result['summary'] += '\n\n当前没有可对齐的有效逐秒留存，以上是内容判断，尚不能确认具体流失区间或原因。'
+        audit_result["report_version"] = assisted.VERSION if evidence is not None else REPORT_VERSION
+        if evidence is not None:
+            audit_result['证据时间轴'] = evidence
+            audit_result['人工补充'] = args.logic_note[:4000]
+            audit_result['事件拆解'] = event_evidence
+            audit_result['拆解流程'] = {'version': assisted.LOGIC_VERSION, 'logic_blinded_to_performance': True,
+                'analysis_model': args.model, 'reasoning_effort': args.reasoning_effort}
+            audit_result['数据限制'] = list(dict.fromkeys(audit_result['数据限制'] + [
+                '业务指标来自历史采集快照；人工累计出单数另标填写时间，未经平台核验，不与历史播放计算转化率；未提供点击、系统订单、GMV和投流记录。',
+                '逐秒留存分母及口径未知，不换算人数，内容与变化的时间关系不证明因果。']))
+        audit_result["采集数据来源"] = performance
+        audit_result["原片镜头拆解"] = analysis["shot_evidence"].get("shots", [])
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = output_path.with_suffix(".tmp")
         with temporary_path.open("w", encoding="utf-8") as file:
@@ -272,6 +378,11 @@ def main() -> int:
         temporary_path.replace(output_path)
 
         print(f"Wrote {output_path}")
+        print(json.dumps({"model": api_response.get("model", args.model),
+                          "reasoning_effort": args.reasoning_effort,
+                          "max_tokens": args.max_tokens,
+                          "finish_reason": api_response["choices"][0].get("finish_reason"),
+                          "usage": api_response.get("usage", {})}, ensure_ascii=False))
         return 0
     except Exception as exc:
         print(f"DeepSeek postprocess failed: {exc}", file=sys.stderr)

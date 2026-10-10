@@ -1,0 +1,151 @@
+"""Native review orchestration checks; no paid API calls."""
+import tempfile
+import json
+import subprocess
+import os
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import native_video_review as review
+
+
+class ReviewTests(unittest.TestCase):
+    def setUp(self):
+        env=patch.dict(os.environ,{'REVIEW_COLLECTION_DB':''});env.start();self.addCleanup(env.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.vid = '7683856958457253150'
+        self.ws = SimpleNamespace(ROOT=self.root, MEDIA=self.root/'output/product_videos',
+            item=Mock(return_value={'video_id':self.vid,'views':0}),
+            snapshot=Mock(return_value={'job':None}), save_job=Mock(),
+            prepare_media=Mock(), write_json=Mock())
+        self.job = {'video_id':self.vid,'product_id':'account:24'}
+
+    def test_zero_and_unknown_are_separate(self):
+        context=review.library_context({'video_id':self.vid,'views':0})
+        self.assertTrue(context['available'])
+        self.assertEqual(context['overview']['play_count'],0)
+        self.assertNotIn('likes',context['engagement'])
+        self.assertNotIn('completion_rate',context['overview'])
+
+    def test_membership_checked_before_report(self):
+        self.ws.item.side_effect=ValueError('not associated')
+        with patch.object(review,'saved_report') as saved:
+            with self.assertRaises(ValueError):review.review_state(self.ws,'account:24',self.vid)
+            saved.assert_not_called()
+
+    def test_other_active_task_waits(self):
+        self.ws.snapshot.return_value={'job':{'action':'audio','video_id':self.vid,'status':'running'}}
+        with patch.object(review,'saved_report',return_value=None):
+            self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'waiting')
+
+    def test_update_shows_processing_even_with_saved_result(self):
+        self.ws.snapshot.return_value={'job':{'action':'review','video_id':self.vid,'status':'running','message':'更新中'}}
+        with patch.object(review,'saved_report',return_value={'summary':'old'}):
+            state=review.review_state(self.ws,'account:24',self.vid)
+            self.assertEqual(state['status'],'processing')
+            self.assertEqual(state['message'],'更新中')
+
+    def test_new_collection_invalidates_missing_retention_without_retry_loop(self):
+        current={'available':True,'collection_id':1,'retention':{'0:00':'100%','0:01':'50%'}}
+        old={'summary':'old','采集数据来源':{'source':'video_library'}}
+        with patch.object(review,'saved_report',return_value=old),patch.object(review,'load_performance_context',return_value=current):
+            self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'missing')
+            self.ws.snapshot.return_value={'job':{'action':'review','video_id':self.vid,'status':'failed','message':'failed'}}
+            self.assertEqual(review.review_state(self.ws,'account:24',self.vid)['status'],'failed')
+
+    def test_user_logic_note_is_membership_checked_and_preserved(self):
+        import product_video_workspace as workspace
+        with patch.object(workspace,'video_tables'),patch.object(workspace,'snapshot',return_value={'job':None}), \
+             patch.object(workspace,'item') as member,patch.object(workspace,'save_job'),patch.object(workspace._pool,'submit'):
+            job=workspace.start({'action':'review','product_id':'account:24','video_id':self.vid,'force':True,'logic_note':'主推玩偶，胸针是剧情道具'})
+        member.assert_called_once_with('account:24',self.vid)
+        self.assertTrue(job['force']);self.assertEqual(job['logic_note'],'主推玩偶，胸针是剧情道具')
+
+    def test_cached_report_does_not_start_pipeline(self):
+        with patch.object(review,'saved_report',return_value={'summary':'cached','report_version':review.REVIEW_VERSION,'拆解流程':{'version':review.LOGIC_VERSION}}),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        run.assert_not_called();self.ws.prepare_media.assert_not_called()
+        self.assertEqual(self.job['done'],1)
+
+    def test_previous_decomposition_version_reuses_extraction_but_refreshes_review(self):
+        media=self.root/'videos'/review.filename(self.vid);media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',side_effect=[{'summary':'old','report_version':'commerce-review-v3-evidence'},{'summary':'new'}]), \
+             patch.object(review,'valid_analysis',return_value=True),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,1)
+        self.assertTrue(run.call_args.args[0][1].endswith('deepseek_postprocess.py'))
+        self.ws.prepare_media.assert_not_called()
+
+    def test_logic_revision_refreshes_without_changing_event_format(self):
+        old={'summary':'old','report_version':review.REVIEW_VERSION,'拆解流程':{'version':1}}
+        self.assertTrue(review.needs_logic_refresh(old))
+        old['拆解流程']['version']=review.LOGIC_VERSION
+        self.assertFalse(review.needs_logic_refresh(old))
+
+    def test_saved_extraction_reused_for_existing_pipeline(self):
+        media=self.root/'videos'/review.filename(self.vid)
+        media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',side_effect=[None,{'summary':'done'}]), \
+             patch.object(review,'valid_analysis',return_value=True),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,1)
+        args=run.call_args.args[0]
+        self.assertTrue(args[1].endswith('deepseek_postprocess.py'))
+        self.assertIn('--performance-context',args)
+        self.ws.prepare_media.assert_not_called()
+        self.assertEqual(self.job['done'],1)
+
+    def test_correction_forces_analysis_but_reuses_extraction(self):
+        media=self.root/'videos'/review.filename(self.vid);media.parent.mkdir();media.write_bytes(b'video')
+        self.job.update(force=True,logic_note='胸针是剧情道具')
+        with patch.object(review,'saved_report',side_effect=[{'summary':'old'},{'summary':'new'}]), \
+             patch.object(review,'valid_analysis',return_value=True),patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,1)
+        args=run.call_args.args[0]
+        self.assertIn('--review-format',args);self.assertIn('evidence',args)
+        self.assertIn('胸针是剧情道具',args)
+        self.ws.prepare_media.assert_not_called()
+
+    def test_missing_extraction_runs_extract_then_analysis(self):
+        media=self.root/'videos'/review.filename(self.vid)
+        media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',side_effect=[None,{'summary':'done'}]), \
+             patch.object(review,'valid_analysis',side_effect=[None,{'timeline':[]}]), \
+             patch.object(review.subprocess,'run') as run:
+            review.run_review(self.ws,self.job)
+        self.assertEqual(run.call_count,2)
+        first,second=run.call_args_list
+        self.assertTrue(first.args[0][1].endswith('analyze_one.sh'))
+        self.assertEqual(first.kwargs['env']['ANALYSIS_LANGUAGE_OVERRIDE'],'auto')
+        self.assertTrue(second.args[0][1].endswith('deepseek_postprocess.py'))
+
+    def test_failed_postprocess_does_not_claim_success(self):
+        media=self.root/'videos'/review.filename(self.vid)
+        media.parent.mkdir();media.write_bytes(b'video')
+        with patch.object(review,'saved_report',return_value=None), \
+             patch.object(review,'valid_analysis',return_value={'timeline':[]}), \
+             patch.object(review.subprocess,'run',side_effect=RuntimeError('failed')):
+            with self.assertRaises(RuntimeError):review.run_review(self.ws,self.job)
+        self.assertNotIn('done',self.job)
+
+    def test_stage_failure_is_recorded_safely_and_can_be_retried(self):
+        secret='my-private-token'
+        failed=subprocess.CalledProcessError(1,['python'],stderr='failed '+secret+' https://api.example.com?token=hidden')
+        with patch.object(review.subprocess,'run',side_effect=failed):
+            with self.assertRaisesRegex(ValueError,'无需重新提取'):
+                review.run_stage(['python'],self.root,self.root,{'API_KEY':secret},'review')
+        diagnostic=json.loads((self.root/'review_failure.json').read_text())
+        self.assertEqual(diagnostic['returncode'],1)
+        self.assertNotIn(secret,diagnostic['stderr'])
+        self.assertNotIn('token=hidden',diagnostic['stderr'])
+        with patch.object(review.subprocess,'run'):
+            review.run_stage(['python'],self.root,self.root,{},'review')
+        self.assertFalse((self.root/'review_failure.json').exists())
+
+
+if __name__=='__main__':unittest.main()

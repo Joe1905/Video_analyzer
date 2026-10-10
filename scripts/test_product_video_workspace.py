@@ -1,5 +1,6 @@
 """Docker: python scripts/test_product_video_workspace.py (isolated DB, no paid calls)."""
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -326,6 +327,7 @@ def browser_checks():
             with patch.object(app, "client", side_effect=AssertionError("Switching tabs must not call SociaVault")):
                 page.locator('#accountsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Test creator'")
+                page.wait_for_function("document.querySelectorAll('.video-card').length === 2")
                 assert page.locator('.video-card').count() == 2
                 assert page.locator('#videoSort').input_value() == 'published_at'
                 assert page.locator('#products .row-id').first.inner_text() == '测试同事'
@@ -333,6 +335,7 @@ def browser_checks():
                 assert 'credit' not in page.locator('body').inner_text()
                 page.locator('#productsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
+                page.wait_for_function("document.querySelectorAll('.video-card').length === 1")
                 assert page.locator('.video-card').count() == 1
                 assert page.locator('#videoSort').input_value() == 'views'
                 for i in range(21):
@@ -411,7 +414,7 @@ def table_checks():
 def main():
     with tempfile.TemporaryDirectory() as temp:
         directory=Path(temp)
-        with patch.object(proxy_pool,"DATA_DIR",directory),patch.object(proxy_pool,"DB_PATH",directory/"test.sqlite"),patch.object(app,"DIRECTORY",directory/"cache"),patch.object(app,"MEDIA",directory/"media"):
+        with patch.dict(os.environ,{'REVIEW_COLLECTION_DB':''}),patch.object(proxy_pool,"DATA_DIR",directory),patch.object(proxy_pool,"DB_PATH",directory/"test.sqlite"),patch.object(app,"DIRECTORY",directory/"cache"),patch.object(app,"MEDIA",directory/"media"):
             app._initialized=False
             backend_checks(directory)
             table_checks()

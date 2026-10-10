@@ -13,7 +13,28 @@ from video_performance_context import external_video_id, load_performance_contex
 
 
 class CommerceReportTests(unittest.TestCase):
+    def test_explicit_thinking_payload_and_timeout(self):
+        for effort in ("high", "disabled", None):
+            with patch.object(post.requests, "post", return_value=Mock()) as request, \
+                 patch.object(post, "record_api_call"):
+                post.call_deepseek("test", "{}", "https://example.com", "test", 32768, effort)
+            payload = request.call_args.kwargs["json"]
+            if effort == "high":
+                self.assertEqual(payload["thinking"], {"type": "enabled"})
+                self.assertEqual(payload["reasoning_effort"], "high")
+                self.assertEqual(request.call_args.kwargs["timeout"], 600)
+            elif effort == "disabled":
+                self.assertEqual(payload["thinking"], {"type": "disabled"})
+                self.assertNotIn("reasoning_effort", payload)
+            else:
+                self.assertNotIn("thinking", payload)
+
+    def test_truncated_report_is_rejected(self):
+        with self.assertRaises(ValueError):
+            post.extract_content({"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]})
+
     def setUp(self):
+        env=patch.dict(os.environ,{'REVIEW_COLLECTION_DB':''});env.start();self.addCleanup(env.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -53,6 +74,26 @@ class CommerceReportTests(unittest.TestCase):
         self.assertNotIn("overview", result)
         self.assertIsNone(external_video_id("other_7683856958457253150.mp4"))
         self.assertEqual(external_video_id(f"shortvideo_SociaVault_{self.vid}.mp4"), self.vid)
+
+    def test_shared_collection_keeps_retention_snapshot_whole(self):
+        import shutil
+        from video_performance_context import collection_links
+        self.put(1,{'overview':{'play_count':'389'},'retention':{'0:00':'100%','0:01':'50%'}})
+        shared=self.root/'shared.sqlite';shutil.copy2(self.db,shared)
+        self.put(2,{'overview':{'play_count':'999'}})
+        with patch.dict(os.environ,{'REVIEW_COLLECTION_DB':str(shared)}):
+            result=load_performance_context(self.root,self.vid)
+            links=collection_links(self.root,[self.vid,'9999999999999999999'])
+        self.assertEqual(result['overview']['play_count'],'389')
+        self.assertEqual(result['collection_source'],'local_collect')
+        self.assertTrue(links[self.vid]['retention_available'])
+        self.assertNotIn('9999999999999999999',links)
+        # Remove local matches: the shared source must work independently, read-only.
+        with sqlite3.connect(self.db) as c:c.execute('DELETE FROM collect_results')
+        with patch.dict(os.environ,{'REVIEW_COLLECTION_DB':str(shared)}):
+            result=load_performance_context(self.root,self.vid)
+        self.assertEqual(result['collection_source'],'shared_collect')
+        self.assertEqual(result['retention']['0:01'],'50%')
 
     def test_prompt_contains_both_evidence_and_causal_limits(self):
         self.put(1, {"overview": {"play_count": "389"}, "retention": {"0:03": "24%"}})
