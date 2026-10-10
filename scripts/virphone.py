@@ -12,7 +12,7 @@ def allowed_request(handler, write=False):
         return False
     if not (peer.is_loopback or peer in ipaddress.ip_network("192.168.0.0/23")):
         return False
-    hosts = {"192.168.1.254:4003", "127.0.0.1:4003", "localhost:4003"}
+    hosts = {"192.168.1.254:4003", "tymy-beta.local:4003", "127.0.0.1:4003", "localhost:4003"}
     if handler.headers.get("Host") not in hosts:
         return False
     return not write or handler.headers.get("Origin") in {"http://" + host for host in hosts}
