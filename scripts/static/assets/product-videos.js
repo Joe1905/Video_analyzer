@@ -83,6 +83,13 @@ async function selectProduct(pid) {
 async function loadVideos() {
   const pid=state.selected, seq=state.seq;if(!pid)return;
   try {
+    if(!state.loading && state.job?.action==="review" && busy()) {
+      const progress=await api(endpoint("review",pid,state.job.video_id));if(seq!==state.seq)return;
+      if(["processing","waiting"].includes(progress.status)) {
+        state.job.message=progress.message;renderJobStatus();
+        clearTimeout(state.timer);state.timer=setTimeout(loadVideos,2500);return;
+      }
+    }
     const result=await api(endpoint("list",pid));if(seq!==state.seq)return;
     state.videos=result.videos;state.job=result.job;state.hasMore=Boolean(result.has_more);state.loading=false;renderVideos();
     if(state.media && $("mediaDialog").open)await renderMedia();
@@ -164,8 +171,7 @@ function renderVideos() {
   $("productsTab").disabled=state.submitting;$("accountsTab").disabled=state.submitting;
   $("totalVideos").textContent=state.loading?"—":state.videos.length;
   for(const [key,id] of [["views","totalViews"],["likes","totalLikes"]]) {const known=state.videos.filter(v=>v[key]!=null);$(id).textContent=known.length?fmt(known.reduce((n,v)=>n+Number(v[key]),0)):"—";}
-  $("jobStatus").hidden=!state.job;$("jobStatus").className="job-status "+(state.job?.status||"");$("jobMessage").textContent=state.job?.message||"";
-  $("jobProgress").hidden=!busy();if(state.job?.total){$("jobProgress").max=state.job.total;$("jobProgress").value=state.job.done;}else $("jobProgress").removeAttribute("value");
+  renderJobStatus();
   const q=$("videoFilter").value.trim().toLowerCase(), key=$("videoSort").value;
   const visible=state.videos.filter(v=>(v.title+" "+v.author+" "+v.video_id).toLowerCase().includes(q)).sort((a,b)=>(b[key]??-1)-(a[key]??-1));
   $("visibleVideos").textContent=visible.length;
@@ -179,6 +185,10 @@ function renderVideos() {
   const markup=state.loading?'<div class="empty">正在读取已保存的视频…</div>':visible.length?visible.slice((state.page-1)*10,state.page*10).map(card).join(""):state.videos.length?'<div class="empty">没有匹配的视频，试试其他关键词。</div>':busy()?'<div class="empty"><h3>正在查找关联视频…</h3><p>结果会自动显示，可以稍后回来查看。</p></div>':`<div class="empty"><h3>${state.job?"暂无已收录的视频":(p.handle?"还没有查询这个账号":"还没有查询这个商品")}</h3><p>${state.job?"本次没有返回关联视频，不代表没有带货内容。":(p.handle?"查询账号最新一页视频及指标。":"查询该商品的关联视频，并保存播放、点赞等表现数据。")}</p><button class="primary" data-refresh-all>${p.handle?"查询最新一页":"查询关联视频"}</button></div>`;
   if($("videos").innerHTML!==markup)$("videos").innerHTML=markup;
   renderSelection();
+}
+function renderJobStatus() {
+  $("jobStatus").hidden=!state.job;$("jobStatus").className="job-status "+(state.job?.status||"");$("jobMessage").textContent=state.job?.message||"";
+  $("jobProgress").hidden=!busy();if(state.job?.total){$("jobProgress").max=state.job.total;$("jobProgress").value=state.job.done;}else $("jobProgress").removeAttribute("value");
 }
 async function startJob(action="refresh", vid="") {
   if(busy())return;
