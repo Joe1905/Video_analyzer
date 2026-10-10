@@ -65,7 +65,9 @@ def input_state(workspace, pid, vid):
         error = str(exc)
     with workspace.database() as conn:
         row = conn.execute('SELECT payload FROM video_manual_orders WHERE video_id=?', (vid,)).fetchone()
-        job = conn.execute("SELECT * FROM collect_jobs WHERE target_video_id=? AND platform='tiktok' ORDER BY created_at DESC LIMIT 1", (vid,)).fetchone()
+        job = conn.execute("SELECT * FROM collect_jobs WHERE platform='tiktok' AND (target_video_id=? OR "
+                           "(current_video_id=? AND status IN ('queued','delayed','preparing','collecting','retrying'))) "
+                           "ORDER BY created_at DESC LIMIT 1", (vid, vid)).fetchone()
     return {'video_id': vid, 'manual_orders': json.loads(row[0]) if row else None,
             'collection_link': video.get('collection_link'), 'collection_allowed': allowed,
             'collection_error': error, 'collection_account': handle,
