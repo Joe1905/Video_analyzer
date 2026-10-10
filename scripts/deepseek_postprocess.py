@@ -336,7 +336,7 @@ def main() -> int:
                 prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
         if evidence is not None and evidence['retention_windows']:
             focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance,events,
-                event_evidence.get('frame_observations',[]))
+                event_evidence.get('frame_observations',[]),audit_result['逻辑合理性'])
             for attempt in range(2):
                 focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
                     model=args.model,max_tokens=args.max_tokens,reasoning_effort=args.reasoning_effort)
@@ -353,6 +353,8 @@ def main() -> int:
                     output_path.with_name(output_path.stem+f'.retention_attempt{attempt+1}.txt').write_text(focused_content,encoding='utf-8')
                     if attempt:raise
                     focused_prompt+='\n校验失败，请严格纠正：'+str(error)
+        if evidence is not None and not evidence['retention_windows']:
+            audit_result['summary'] += '\n\n当前没有可对齐的有效逐秒留存，以上是内容判断，尚不能确认具体流失区间或原因。'
         audit_result["report_version"] = assisted.VERSION if evidence is not None else REPORT_VERSION
         if evidence is not None:
             audit_result['证据时间轴'] = evidence
