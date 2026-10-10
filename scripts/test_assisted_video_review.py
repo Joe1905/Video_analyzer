@@ -37,6 +37,21 @@ class EvidenceReviewTests(unittest.TestCase):
         r['留存分析']=[{'区间ID':'r0','依据':['t0']}]
         with self.assertRaises(ValueError):validate(r,e)
 
+    def test_word_confidence_is_scoped_to_retention_window(self):
+        import json
+        analysis={'metadata':{'duration_seconds':3},'timeline':[],
+            'transcript':{'segments':[{'start':0,'end':3,'text':' uncertain future',
+                'words':[{'start':.1,'end':.5,'word':' uncertain','probability':.122},
+                         {'start':2.1,'end':2.5,'word':' future','probability':.95}]}]}}
+        performance={'available':True,'retention':{'0:00':'100%','0:01':'60%','0:02':'60%'}}
+        evidence=build_evidence(analysis,build_report_facts(analysis,performance))
+        self.assertEqual(evidence['timeline'][0]['speech'][0]['words'][0]['probability'],.122)
+        prompt=retention_prompt(evidence,{'推进':[]},performance)
+        contexts=json.loads(prompt.split('窗口证据：')[1].split('\n已知表现快照：')[0])
+        speech=contexts[0]['prior_and_current_evidence'][0]['speech'][0]
+        self.assertEqual(speech['words'],[{'word':' uncertain','start':.1,'end':.5,'probability':.122}])
+        self.assertNotIn('future',json.dumps(contexts[0]))
+
     def test_adjacent_opening_losses_are_merged_and_other_runs_retained(self):
         for values,expected in (([100,85,76,73,69,64,62,59,57,56,55,53,51,49,48,47],24),
                                 ([100,82,67,62,58,55,51,47,44,42,41,39,36,33,32,29],33)):
