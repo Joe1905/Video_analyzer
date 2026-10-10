@@ -154,11 +154,14 @@ def retention_prompt(evidence, logic, performance, events=()):
                 'speech':[{'text':s['text'],'precision':s['precision']} for s in row['speech']],
                 'logic_roles':[] if events else [b['逻辑作用'] for b in logic['推进'] if row['id'] in b['依据']]})
         contexts.append({'window':{k:v for k,v in window.items() if k!='after'},'prior_and_current_evidence':rows,
-                         'verified_prior_and_current_events': [e for e in events if e['end'] <= window['end_seconds']]})
+                         'verified_prior_and_current_events': [dict(e, continues_after_window=e['end']>window['end_seconds'])
+                             for e in events if e['end'] <= window['end_seconds'] or
+                             e.get('start',e['end']) < window['end_seconds']]})
     return '''根据每个窗口自身之前和区间内的证据，生成留存解释候选和最多两项调整方向。只输出严格JSON {"留存分析":[{区间ID,解释候选,其他解释,证据强度:"低"或"中",依据:[时间轴ID]}],"可尝试方向":[{方向,依据:[时间轴ID],保留,验证,限制}]}。
 调整方向只能基于给定内容和实际数据，说明要保留的表达机制及验证方法，不承诺提升。不重写视频逻辑。
 有核验事件时只根据核验后的观察还原动作，不补共同绘画、补救、画不出来等动机。采样未覆盖的部分说明证据不足，不等于原片缺失。不将无法确认文字等同无字幕，不将低置信词当确定台词。建议指出具体可调整的已有画面/顺序及要观察的区间，不能只写检查更清晰或笼统比较整体指标。
 不得引用未提供的后续台词/画面；不要重复时间数值和完整台词；解释当前可感知的信息及其逻辑作用，不替人断言原因。
+continues_after_window表示动作跨过窗口，只分析在窗口之前或之内已经发生的部分，不以其之后的结果解释此前下降，也不能因跨窗事件尚未结束而声称区间内没有该动作。
 最多每个窗口一项，必须覆盖全部窗口。依据只引用该窗口提供的ID。
 后段平稳不能证明内容优秀，剩余观众不同不证明留存分母变小。不换算观众人数。
 留存数值和实际表现快照已提供，不能写没有留存或播放数据；分母、对照及成交数据未提供，保留其他解释和不确定性。

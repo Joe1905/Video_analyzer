@@ -333,7 +333,7 @@ def main() -> int:
             focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance,events)
             for attempt in range(2):
                 focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
-                    model=args.model,max_tokens=8192,reasoning_effort=args.reasoning_effort)
+                    model=args.model,max_tokens=args.max_tokens,reasoning_effort=args.reasoning_effort)
                 focused_content=extract_content(focused_response)
                 try:
                     focused=parse_json_content(focused_content)
