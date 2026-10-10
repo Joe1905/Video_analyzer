@@ -31,6 +31,8 @@ class EventTests(unittest.TestCase):
         self.assertEqual(result['observed'], check['observed'])
         self.assertEqual(result['intended_meaning'], '')
         self.assertEqual(result['proposed_observed'], '插入设备')
+        revised = apply_checks(events, {'checks': [dict(check, uncertainties=['真实商品能力未核实'])]})[0]
+        self.assertEqual(revised['uncertainties'], ['真实商品能力未核实'])
         self.assertNotIn('proposed_observed', observed_events({'events': [result]})[0])
         self.assertNotIn('intended_meaning', observed_events({'events': [dict(result, verification='supported', intended_meaning='假设的扫描功能')]})[0])
         for bad in ({'checks': []}, {'checks': [dict(check, id='other')]}, {'checks': [dict(check, status='sure')]}):
@@ -87,6 +89,16 @@ class EventTests(unittest.TestCase):
             {'end': 1, 'observed': '前面的观察'}, {'end': 3, 'observed': '后续结果不能解释此前流失'}])
         self.assertIn('前面的观察', prompt)
         self.assertNotIn('后续结果不能解释此前流失', prompt)
+
+    def test_retention_with_verified_events_excludes_old_frame_and_logic_guesses(self):
+        evidence={'timeline':[{'id':'t0','start':0,'end':1,'visuals':[
+            {'frame_id':'frame_0','seconds':0,'text':'旧错误的共同绘画'}],'speech':[]}],
+            'retention_windows':[{'id':'r0','before':[],'during':['t0'],'after':[],'end_seconds':1}]}
+        prompt=retention_prompt(evidence,{'推进':[{'依据':['t0'],'逻辑作用':'错误的补救动机'}]}, {},
+            [{'end':1,'observed':'成人擦拭画纸'}])
+        self.assertIn('成人擦拭画纸',prompt)
+        self.assertNotIn('旧错误的共同绘画',prompt)
+        self.assertNotIn('错误的补救动机',prompt)
 
 
 if __name__ == '__main__':
