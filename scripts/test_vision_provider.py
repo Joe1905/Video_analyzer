@@ -149,6 +149,17 @@ class VisionStateTests(unittest.TestCase):
             post.assert_called_once()
         self.assertTrue(vp.get_status()["direct_video_enabled"])
 
+    def test_reasoning_is_request_scoped_and_does_not_change_extraction_default(self):
+        vp.mark_unavailable('Arrearage', '欠费')
+        answer=reply(payload={'choices':[{'message':{'content':'visible observation'},'finish_reason':'stop'}]})
+        with patch.object(vp.requests,'post',return_value=answer) as post:
+            vp.recognize_image(prompt='Verify temporal action',reasoning_effort='high')
+            self.assertEqual(post.call_args.kwargs['json']['thinking'],{'type':'enabled'})
+            self.assertEqual(post.call_args.kwargs['json']['reasoning_effort'],'high')
+            vp.recognize_image(prompt='Extract objective frame')
+            self.assertEqual(post.call_args.kwargs['json']['thinking'],{'type':'disabled'})
+            self.assertNotIn('reasoning_effort',post.call_args.kwargs['json'])
+
     def test_direct_video_guard_runs_before_video_upload(self):
         import direct_video_analyze as direct
         vp.mark_unavailable("Arrearage", "欠费")
