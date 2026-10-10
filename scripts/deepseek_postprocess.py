@@ -295,6 +295,8 @@ def main() -> int:
             # but only visually rechecked observations enter narrative reasoning.
             events = observed_events(event_evidence)
             prompt = assisted.INSTRUCTIONS + '\n本阶段只梳理内容，尚未读取表现数据。留存分析必须为空。' + \
+                ('可尝试方向必须为空，下一阶段结合实际数据生成。' if evidence['retention_windows'] else '可尝试方向只基于内容，不对业务数据可用性下结论。') + \
+                '本阶段不读取指标不等于系统没有指标，不得写没有留存、播放等数据。' + \
                 '区分可见事件、剧情表达意图与现实商品能力；不能因为无法验证真实能力而否定剧情表达。' + \
                 'uncertain和contradicted事件只能使用核验后的observed，不恢复先前猜测；表达假设不是事实。' + \
                 '每个动作必须对应事件的前后帧，静态位置不能改写为动作。不要补播放、留存等数字。\n核验后的跨镜头事件：\n' + \
@@ -331,7 +333,9 @@ def main() -> int:
                 focused_content=extract_content(focused_response)
                 try:
                     focused=parse_json_content(focused_content)
-                    candidate=dict(audit_result,留存分析=focused.get('留存分析'))
+                    if not isinstance(focused.get('可尝试方向'), list):
+                        raise ValueError('数据分析阶段缺少调整方向')
+                    candidate=dict(audit_result,留存分析=focused.get('留存分析'),可尝试方向=focused['可尝试方向'])
                     assisted.validate(candidate,evidence)
                     audit_result=candidate
                     break
