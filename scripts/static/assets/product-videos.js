@@ -383,25 +383,32 @@ function updateReviewCollection(data,ref) {
 }
 async function saveReviewOrders() {
   const ref=state.inputs;if(!ref)return;
+  if(ref.busy)throw new Error('正在保存或提交，请稍候');
   const value=$("manualOrders").value.trim();
   if(value&&!/^\d+$/.test(value))throw new Error('出单数量需为非负整数');
-  const result=await api('/api/product-videos/orders',{product_id:ref.pid,video_id:ref.vid,count:value===''?null:Number(value)});
-  if(state.inputs!==ref)return;
-  ref.savedCount=value;
-  $("manualOrdersTime").textContent=result.manual_orders?`已保存累计 ${result.manual_orders.count} 单 · 人工填写`:"已清除，出单数量未知";
-  $("reviewInputsHint").textContent="已保存，下次复盘将使用本次补充。";
+  ref.busy=true;$("saveManualOrders").disabled=true;$("reviewAfterInputs").disabled=true;
+  try {
+    const result=await api('/api/product-videos/orders',{product_id:ref.pid,video_id:ref.vid,count:value===''?null:Number(value)});
+    if(state.inputs!==ref)return;
+    ref.savedCount=value;
+    $("manualOrdersTime").textContent=result.manual_orders?`已保存累计 ${result.manual_orders.count} 单 · 人工填写`:"已清除，出单数量未知";
+    $("reviewInputsHint").textContent="已保存，下次复盘将使用本次补充。";
+  } finally {
+    ref.busy=false;
+    if(state.inputs===ref){$("saveManualOrders").disabled=false;$("reviewAfterInputs").disabled=ref.active;}
+  }
 }
 async function collectReviewRetention() {
   const ref=state.inputs;if(!ref||ref.busy||ref.active)return;
   const account=$("reviewCollectAccount").value,target=$("reviewCollectTarget").value;
   if(!account||target===''){$("reviewCollectionOptions").open=true;throw new Error('请先选择视频所属账号和采集写入表');}
-  ref.busy=true;$("collectReviewRetention").disabled=true;
+  ref.busy=true;$("collectReviewRetention").disabled=true;$("reviewAfterInputs").disabled=true;
   try {
     await api('/api/product-videos/collect-retention',{product_id:ref.pid,video_id:ref.vid,account_id:Number(account),feishu_target:ref.targets[Number(target)],publish_date_start:$("reviewCollectStart").value,publish_date_end:$("reviewCollectEnd").value});
     if(state.inputs!==ref)return;
     $("reviewInputsHint").textContent="已加入 Proxy 采集队列；完成后可生成复盘，关闭窗口也会继续。";
     const data=await api(endpoint('review-inputs',ref.pid,ref.vid));ref.busy=false;if(state.inputs===ref)updateReviewCollection(data,ref);
-  } finally {ref.busy=false;if(state.inputs===ref)$("collectReviewRetention").disabled=ref.active||!ref.targets.length;}
+  } finally {ref.busy=false;if(state.inputs===ref){$("collectReviewRetention").disabled=ref.active||!ref.targets.length;$("reviewAfterInputs").disabled=ref.active;}}
 }
 $("reviewInputsDialog").addEventListener('close',()=>{clearTimeout(state.inputsTimer);state.inputs=null;});
 async function openReview(vid) {
