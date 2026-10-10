@@ -275,7 +275,9 @@ def main() -> int:
         media_name = Path(args.video_filename or analysis_path.parent.name).name
         metadata["duration_seconds"] = video_duration(Path.cwd() / "videos" / media_name)
         analysis["metadata"] = metadata
-        analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name)
+        # Evidence reviews use verified events below, not the legacy shot/edit-plan path.
+        # Keep existing shot artifacts intact; only legacy reviews need to regenerate them.
+        analysis["shot_evidence"] = analyze_shots(analysis, analysis_path.parent, Path.cwd() / "videos" / media_name) if args.review_format == 'legacy' else {'shots': []}
         video_id = external_video_id(args.video_id or analysis_path.parent.name)
         performance = load_performance_context(Path.cwd(), video_id)
         if not performance.get("available") and args.performance_context:
