@@ -277,7 +277,7 @@ function showEvidenceReview(report) {
   const evidence=report['证据时间轴'],logic=report['视频逻辑'],rows=evidence.timeline;
   const chain=logic['推进'].map(beat=>`<article class="native-review-card"><button class="review-seek" data-review-seek="${beat.start}">依据 ${reviewSeconds(beat.start)}–${reviewSeconds(beat.end)}秒 ↗</button>${reviewFields({事件:beat['事件'],逻辑作用:beat['逻辑作用'],承接:beat['承接']})}</article>`).join('');
   const table=rows.map(row=>{
-    const beats=logic['推进'].filter(b=>b['依据'].includes(row.id));
+    const beats=logic['推进'].filter(b=>b['依据'].includes(row.id)).map(b=>({...b,逻辑作用:reviewText(b['逻辑作用'])}));
     const values=row.retention;
     const retention=values?`${values.start_percent}% → ${values.end_percent}%<br>${values.drop_percentage_points>0?'下降':values.drop_percentage_points<0?'回升':'变化'} ${reviewSeconds(Math.abs(values.drop_percentage_points))} 个百分点`:(row.start_percent!=null?`${row.start_percent}%（区间数据不完整）`:'未提供');
     const visuals=row.visuals.map(f=>`<p><small>${reviewSeconds(f.seconds)}秒</small> ${esc(f.text)}</p>`).join('')||'<p>此秒无采样帧，不补造画面。</p>';
@@ -290,7 +290,7 @@ function showEvidenceReview(report) {
     return `<div class="review-context-row">${evidenceRefs([id])}<details><summary>查看画面与口播</summary>${row.visuals.map(f=>`<p>${reviewSeconds(f.seconds)}秒：${esc(f.text)}</p>`).join('')||'<p>无采样帧</p>'}${row.speech.map(s=>`<p><strong>${s.precision==='segment'?'整段引用 · '+reviewSeconds(s.start)+'–'+reviewSeconds(s.end)+'秒':'该秒语音原文'}</strong>${esc(s.text)}</p>`).join('')}</details></div>`;
   }).join('');
   const windows=evidence.retention_windows.map(w=>`<article class="native-review-card"><h4>${esc(w.label)} · ${w.start_seconds}–${w.end_seconds}秒</h4><p>${w.start_percent}% → ${w.end_percent}% · ${w.drop_percentage_points<0?'回升':'下降'} ${reviewSeconds(Math.abs(w.drop_percentage_points))} 个百分点</p><div class="review-context"><section><strong>变化前</strong>${contexts(w.before)||'<p>已在开头，无前段。</p>'}</section><section><strong>变化中</strong>${contexts(w.during)}</section><section><strong>变化后</strong>${contexts(w.after)||'<p>已到片尾。</p>'}</section></div></article>`).join('');
-  const judgmentCard=j=>`<article class="native-review-card"><span class="review-judgment">${esc(j['判断'])}</span><h4>${esc(j['要点'])}</h4><p>${esc(j['解释'])}</p>${evidenceRefs(j['依据'])}</article>`;
+  const judgmentCard=j=>`<article class="native-review-card"><span class="review-judgment">${esc(j['判断'])}</span><h4>${esc(reviewText(j['要点']))}</h4><p>${esc(reviewText(j['解释']))}</p>${evidenceRefs(j['依据'])}</article>`;
   const judgments=report['逻辑合理性'].slice(0,4).map(judgmentCard).join('')+(report['逻辑合理性'].length>4?`<details><summary>更多待核实判断</summary>${report['逻辑合理性'].slice(4).map(judgmentCard).join('')}</details>`:'');
   const analyses=report['留存分析'].map(a=>{const w=evidence.retention_windows.find(w=>w.id===a['区间ID']);return `<article class="native-review-card"><h4>${esc(w?.label||'')} · ${w?.start_seconds}–${w?.end_seconds}秒</h4>${reviewFields({解释候选:a['解释候选'],其他解释:a['其他解释'],证据强度:a['证据强度']})}${evidenceRefs(a['依据'])}</article>`;}).join('');
   const source=report['采集数据来源']||{};

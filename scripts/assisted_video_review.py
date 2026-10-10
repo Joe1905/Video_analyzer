@@ -186,7 +186,7 @@ verified_observed是该帧时刻的核验观察，以此检查区间内动作。
 后段平稳不能证明内容优秀，剩余观众不同不证明留存分母变小。不换算观众人数。
 留存数值和实际表现快照已提供，不能写没有留存或播放数据；分母、对照及成交数据未提供，保留其他解释和不确定性。
 人工累计出单数如有提供，须明确为人工填写及其填写时间，不能写完全没有订单信息；它与历史留存非同一快照，不能计算转化率或据此认定流失原因。
-'''+'\n窗口证据：'+json.dumps(contexts,ensure_ascii=False)+'\n已知表现快照：'+json.dumps({k:performance.get(k) for k in ('overview','engagement','limitations','manual_orders')},ensure_ascii=False)
+'''+'\n总体表达（仅供摘要交代原片，留存解释仍限对应窗口证据）：'+logic.get('核心表达','')+'\n窗口证据：'+json.dumps(contexts,ensure_ascii=False)+'\n已知表现快照：'+json.dumps({k:performance.get(k) for k in ('overview','engagement','limitations','manual_orders')},ensure_ascii=False)
 
 
 def validate(report, evidence):
