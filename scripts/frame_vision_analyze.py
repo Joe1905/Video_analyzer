@@ -48,6 +48,20 @@ def main():
                 self.config["output_dir"] = args.output
 
     cli.Config = OutputConfig
+    original_audio_processor = cli.AudioProcessor
+
+    class CachedAudioProcessor(original_audio_processor):
+        def __init__(self, **kwargs):
+            # A complete local model should not wait on a remote cache check.
+            try:
+                from faster_whisper.utils import download_model
+                kwargs["model_size_or_path"] = download_model(
+                    kwargs.get("model_size_or_path", "small"), local_files_only=True)
+            except (OSError, ValueError):
+                pass  # First use still follows the existing model download flow.
+            super().__init__(**kwargs)
+
+    cli.AudioProcessor = CachedAudioProcessor
     from video_analyzer.frame import Frame
     from coverage_sampler import extract
     original_processor = cli.VideoProcessor
