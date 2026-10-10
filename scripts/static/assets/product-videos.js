@@ -356,11 +356,11 @@ function prepareReview(caption) {
 async function openReviewInputs(vid) {
   const video=state.videos.find(v=>String(v.video_id)===String(vid));if(!video)return;
   clearTimeout(state.inputsTimer);
-  const ref=state.inputs={pid:state.selected,vid:String(vid),targets:[],savedCount:"",busy:false};
+  const ref=state.inputs={pid:state.selected,vid:String(vid),allowed:false,savedCount:"",busy:false};
   $("reviewInputsCaption").textContent=video.title||vid;
   $("manualOrders").value="";$("manualOrdersTime").textContent="";
   $("reviewInputsHint").textContent="正在读取补充数据…";
-  $("reviewCollectionStatus").textContent="";$("reviewCollectAccount").innerHTML="";$("reviewCollectTarget").innerHTML="";
+  $("reviewCollectionStatus").textContent="";
   $("collectReviewRetention").disabled=true;
   $("saveManualOrders").disabled=true;$("reviewAfterInputs").disabled=true;
   $("reviewInputsDialog").showModal();
@@ -369,26 +369,17 @@ async function openReviewInputs(vid) {
   $("manualOrders").value=ref.savedCount;
   $("saveManualOrders").disabled=false;
   $("manualOrdersTime").textContent=data.manual_orders?`保存于 ${data.manual_orders.recorded_at.slice(0,16).replace('T',' ')} UTC · 人工累计数据`:"尚未补充";
-  $("reviewCollectAccount").innerHTML='<option value="">选择视频所属账号</option>'+data.accounts.map(a=>`<option value="${esc(a.product_id.split(':')[1])}" ${a.collection_allowed?'':'disabled'}>@${esc(a.handle)}${a.collection_allowed?'':' · 未绑定 IP'}</option>`).join('');
-  $("reviewCollectAccount").value=ref.pid.startsWith('account:')?ref.pid.split(':')[1]:String(data.collection_link?.account_id||'');
-  const published=video.published_at?new Date(Number(video.published_at)*1000):new Date();
-  const day=Number.isNaN(published.getTime())?'':published.toLocaleDateString('sv-SE');
-  $("reviewCollectStart").value=day;$("reviewCollectEnd").value=day;
+  $("reviewCollectionAccount").textContent=data.collection_allowed?`使用 @${data.collection_account} 绑定的 IP，仅采集当前视频并保存到本地。`:data.collection_error;
   $("reviewInputsHint").textContent="两项都可选；保存后复盘会使用最新补充。";
   updateReviewCollection(data,ref);
-  try {
-    const result=await api(endpoint('collection-targets',ref.pid,ref.vid));if(state.inputs!==ref)return;
-    ref.targets=result.targets||[];
-    $("reviewCollectTarget").innerHTML='<option value="">选择写入表</option>'+ref.targets.map((t,i)=>`<option value="${i}">${esc(t.appName)} / ${esc(t.tableName)}</option>`).join('');
-    $("collectReviewRetention").disabled=ref.active;
-  } catch(error){if(state.inputs===ref)$("reviewInputsHint").textContent=`出单数仍可保存；采集写入表加载失败：${error.message}`;}
 }
 function updateReviewCollection(data,ref) {
   const job=data.collection_job;
+  ref.allowed=!!data.collection_allowed;
   ref.active=!!job&&['queued','delayed','preparing','collecting','retrying'].includes(job.status);
   const link=data.collection_link;
   $("reviewCollectionStatus").textContent=job?`${job.status_label} · ${job.completed_videos}/${job.total_videos||'?'}${job.last_error?' · '+job.last_error:job.status_detail?' · '+job.status_detail:''}`:link?`${link.retention_available?'已有留存':'已有采集记录，留存不完整'} · ${String(link.collected_at||'').slice(0,10)}`:"尚未采集留存";
-  $("collectReviewRetention").disabled=ref.active||!ref.targets.length||ref.busy;
+  $("collectReviewRetention").disabled=ref.active||!ref.allowed||ref.busy;
   $("reviewAfterInputs").disabled=ref.active||ref.busy;
   if(ref.active){
     clearTimeout(state.inputsTimer);
@@ -417,15 +408,14 @@ async function saveReviewOrders() {
 }
 async function collectReviewRetention() {
   const ref=state.inputs;if(!ref||ref.busy||ref.active)return;
-  const account=$("reviewCollectAccount").value,target=$("reviewCollectTarget").value;
-  if(!account||target===''){$("reviewCollectionOptions").open=true;throw new Error('请先选择视频所属账号和采集写入表');}
+  if(!ref.allowed)throw new Error('视频所属账号尚未满足采集条件');
   ref.busy=true;$("collectReviewRetention").disabled=true;$("reviewAfterInputs").disabled=true;
   try {
-    await api('/api/product-videos/collect-retention',{product_id:ref.pid,video_id:ref.vid,account_id:Number(account),feishu_target:ref.targets[Number(target)],publish_date_start:$("reviewCollectStart").value,publish_date_end:$("reviewCollectEnd").value});
+    await api('/api/product-videos/collect-retention',{product_id:ref.pid,video_id:ref.vid});
     if(state.inputs!==ref)return;
     $("reviewInputsHint").textContent="已加入 Proxy 采集队列；完成后可生成复盘，关闭窗口也会继续。";
     const data=await api(endpoint('review-inputs',ref.pid,ref.vid));ref.busy=false;if(state.inputs===ref)updateReviewCollection(data,ref);
-  } finally {ref.busy=false;if(state.inputs===ref){$("collectReviewRetention").disabled=ref.active||!ref.targets.length;$("reviewAfterInputs").disabled=ref.active;}}
+  } finally {ref.busy=false;if(state.inputs===ref){$("collectReviewRetention").disabled=ref.active||!ref.allowed;$("reviewAfterInputs").disabled=ref.active;}}
 }
 $("reviewInputsDialog").addEventListener('close',()=>{clearTimeout(state.inputsTimer);state.inputs=null;});
 async function openReview(vid) {

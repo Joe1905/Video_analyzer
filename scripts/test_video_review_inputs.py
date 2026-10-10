@@ -21,7 +21,7 @@ class InputTests(unittest.TestCase):
     def setUp(self):
         scope=isolated_proxy_db();scope.__enter__();self.addCleanup(scope.__exit__,None,None,None)
         init=patch.object(workspace,'_initialized',False);init.start();self.addCleanup(init.stop)
-        member=patch.object(workspace,'item',return_value={'video_id':VID});member.start();self.addCleanup(member.stop)
+        member=patch.object(workspace,'item',return_value={'video_id':VID,'url':'https://www.tiktok.com/@test/video/'+VID});member.start();self.addCleanup(member.stop)
         self.root=proxy_pool.DATA_DIR.parent
         self.payload={'product_id':PID,'video_id':VID}
 
@@ -62,10 +62,12 @@ class InputTests(unittest.TestCase):
         target={'appToken':'a','tableId':'b'}
         with patch.object(collect,'_validate_feishu_target',return_value=target) as validate_target:
             result=inputs.start_collection(workspace,dict(self.payload,account_id=account,feishu_target=target,publish_date_start='2026-07-01',publish_date_end='2026-07-31'))
-        validate_target.assert_called_once_with(target)
+        validate_target.assert_not_called()
         self.assertEqual(result['job']['target_video_id'],VID)
         self.assertEqual(result['job']['status'],'queued')
-        self.assertTrue(result['job']['auto_sync'])
+        self.assertFalse(result['job']['auto_sync'])
+        self.assertEqual(result['job']['publish_date_start'],'')
+        self.assertEqual(result['job']['feishu_target'],{})
         self.assertEqual(result['job']['account_id'],account)
 
     def test_unbound_account_cannot_queue(self):
@@ -84,13 +86,21 @@ class InputTests(unittest.TestCase):
     def test_invalid_write_target_cannot_queue(self):
         account=self.account()
         with patch.object(collect,'list_feishu_targets',return_value={'targets':[]}):
-            with self.assertRaisesRegex(ValueError,'白名单'):inputs.start_collection(workspace,dict(self.payload,account_id=account,feishu_target={'appToken':'a','tableId':'b'}))
+            with self.assertRaisesRegex(ValueError,'白名单'):collect.create_job({'account_id':account,'feishu_target':{'appToken':'a','tableId':'b'}})
         with proxy_pool.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM collect_jobs').fetchone()[0],0)
 
-    def test_wrong_account_for_account_library_is_rejected(self):
+    def test_client_cannot_override_library_account(self):
         with patch.object(collect,'create_job') as creator:
-            with self.assertRaises(ValueError):inputs.start_collection(workspace,dict(self.payload,product_id='account:4',account_id=5))
-        creator.assert_not_called()
+            inputs.start_collection(workspace,dict(self.payload,product_id='account:4',account_id=5))
+        self.assertEqual(creator.call_args.args[0]['account_id'],4)
+
+    def test_target_discovery_ignores_publish_range_and_stops_at_id(self):
+        from unittest.mock import Mock
+        page=Mock();page.url='https://www.tiktok.com/tiktokstudio/content'
+        link={'id':VID,'url':'https://www.tiktok.com/@test/video/'+VID,'title_hint':''}
+        with patch.object(collect,'_discover_links_on_page',return_value=[link]),patch.object(collect,'_list_scroll',return_value={}):
+            found=collect._discover_video_links(page,'2030-01-01','2030-01-02',target_video_id=VID)
+        self.assertEqual(found[0]['id'],VID)
 
 
 if __name__=='__main__':unittest.main()

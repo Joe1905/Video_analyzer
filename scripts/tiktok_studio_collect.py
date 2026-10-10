@@ -412,10 +412,11 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
     with proxy_pool.connect() as conn:
         account = _account(conn, account_id)
         proxy_pool.require_account_proxy_bound(account)
-        publish_date_start, publish_date_end = _validate_publish_range(
+        local_video = bool(target_video_id and payload.get('write_to_feishu') is False)
+        publish_date_start, publish_date_end = ('', '') if local_video else _validate_publish_range(
             payload.get("publish_date_start"), payload.get("publish_date_end")
         )
-        feishu_target = _validate_feishu_target(payload.get("feishu_target"))
+        feishu_target = {} if local_video else _validate_feishu_target(payload.get("feishu_target"))
         feishu_target_json = json.dumps(feishu_target, ensure_ascii=False, separators=(",", ":"))
         job_id = _insert_job(
             conn,
@@ -430,7 +431,7 @@ def create_job(payload: dict[str, Any]) -> dict[str, Any]:
         )
         now = _iso()
         conn.execute("UPDATE collect_jobs SET target_video_id=? WHERE id=?", (target_video_id, job_id))
-        conn.execute(
+        if not local_video:conn.execute(
             """
             INSERT INTO collect_settings (account_id, feishu_target_json, created_at, updated_at)
             VALUES (?, ?, ?, ?)
@@ -882,6 +883,7 @@ def _scan_job_video_list(job: dict[str, Any], session: dict[str, Any]) -> list[d
             job["publish_date_start"],
             job["publish_date_end"],
             diagnostic_path=log_dir / "video-list-discovery.json",
+            target_video_id=job.get('target_video_id', ''),
         ))
 
 
@@ -1243,6 +1245,7 @@ def _discover_video_links(
     publish_date_start: str,
     publish_date_end: str,
     diagnostic_path: Path | None = None,
+    target_video_id: str = '',
 ) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
     scroll_events: list[dict[str, Any]] = []
@@ -1250,7 +1253,7 @@ def _discover_video_links(
 
     def collect() -> None:
         for row in _discover_links_on_page(page):
-            row["published_date"] = _source_published_date(
+            row["published_date"] = _video_id_published_date(row['id']) if target_video_id else _source_published_date(
                 row.get("title_hint", ""), publish_date_start, publish_date_end
             ) or _video_id_published_date(row["id"])
             existing = found.get(row["id"])
@@ -1258,6 +1261,8 @@ def _discover_video_links(
                 found[row["id"]] = row
 
     def matching() -> list[dict[str, str]]:
+        if target_video_id:
+            return [row for row in found.values() if row['id'] == target_video_id]
         return [
             row for row in found.values()
             if publish_date_start <= row.get("published_date", "") <= publish_date_end
@@ -1290,6 +1295,9 @@ def _discover_video_links(
         for round_index in range(1, LIST_SCROLL_MAX_ROUNDS + 1):
             before = len(found)
             collect()
+            if target_video_id in found:
+                stop_reason = 'target_video_found'
+                break
             unchanged_rounds = unchanged_rounds + 1 if len(found) == before else 0
             scroll_event = _list_scroll(page, LIST_SCROLL_STEP_PX)
             scroll_event.update({
@@ -2058,6 +2066,7 @@ def _execute_browser(job: dict[str, Any], session: dict[str, Any]) -> tuple[int,
             job["publish_date_start"],
             job["publish_date_end"],
             diagnostic_path=log_dir / "video-list-discovery.json",
+            target_video_id=job.get('target_video_id', ''),
         )
         known_links = {source["id"] for source in links}
         for source in _pending_video_sources(job["id"]):
