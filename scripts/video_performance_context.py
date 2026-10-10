@@ -191,7 +191,7 @@ def validate_report(report):
         if report['report_version'] == 'commerce-review-v4-events':
             from event_analysis import validate_events
             events = report.get('事件拆解')
-            if not isinstance(events, dict) or events.get('available') is not True or events.get('version') not in {1,2,3,4}:
+            if not isinstance(events, dict) or events.get('available') is not True or events.get('version') not in {1,2,3,4,5}:
                 raise ValueError('缺少核验后的跨镜头事件')
             frames = [{'evidence_id': f['frame_id'], 'timestamp_seconds': f['seconds']}
                       for row in report['证据时间轴']['timeline'] for f in row['visuals']]

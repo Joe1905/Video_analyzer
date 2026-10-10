@@ -46,6 +46,8 @@ class EventTests(unittest.TestCase):
             model = Mock(side_effect=[{'events': [self.event]}, {'checks': [checked]}]*2)
             analysis = {'metadata': {'duration_seconds': 3}, 'timeline': self.frames}
             result = analyze_events(analysis, folder, model)
+            self.assertNotIn('插入设备',model.call_args_list[1].args[0])
+            self.assertNotIn('扫描纸张',model.call_args_list[1].args[0])
             self.assertEqual(result['inspected_frame_ids'], ['frame_0', 'frame_1', 'frame_2'])
             self.assertEqual(model.call_count, 2)
             self.assertEqual(analyze_events(analysis, folder, model), result)
