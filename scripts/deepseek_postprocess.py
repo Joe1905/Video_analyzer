@@ -330,7 +330,8 @@ def main() -> int:
                 print(f"Report validation rejected first attempt: {error}; regenerating once", flush=True)
                 prompt += "\n上次输出未通过执行校验：" + str(error) + "。本次严格检查所有时间、素材引用与口播长度后重新生成完整JSON。"
         if evidence is not None and evidence['retention_windows']:
-            focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance,events)
+            focused_prompt=assisted.retention_prompt(evidence,audit_result['视频逻辑'],performance,events,
+                event_evidence.get('frame_observations',[]))
             for attempt in range(2):
                 focused_response=call_deepseek(api_key=api_key,prompt=focused_prompt,api_url=args.api_url,
                     model=args.model,max_tokens=args.max_tokens,reasoning_effort=args.reasoning_effort)

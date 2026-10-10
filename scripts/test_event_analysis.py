@@ -90,8 +90,7 @@ class EventTests(unittest.TestCase):
         self.assertIn('前面的观察', prompt)
         self.assertNotIn('后续结果不能解释此前流失', prompt)
         ongoing=retention_prompt(evidence, {'推进': []}, {}, [{'start':.5,'end':2.25,'observed':'跨窗擦拭'}])
-        self.assertIn('跨窗擦拭',ongoing)
-        self.assertIn('"continues_after_window": true',ongoing)
+        self.assertNotIn('跨窗擦拭',ongoing)
 
     def test_retention_with_verified_events_excludes_old_frame_and_logic_guesses(self):
         evidence={'timeline':[{'id':'t0','start':0,'end':1,'visuals':[
@@ -102,6 +101,10 @@ class EventTests(unittest.TestCase):
         self.assertIn('成人擦拭画纸',prompt)
         self.assertNotIn('旧错误的共同绘画',prompt)
         self.assertNotIn('错误的补救动机',prompt)
+        prompt=retention_prompt(evidence,{'推进':[]},{},[{'start':0,'end':2,'observed':'未来按键'}],
+            [{'frame_id':'frame_0','observed':'窗口内正在注视设备'}])
+        self.assertIn('窗口内正在注视设备',prompt)
+        self.assertNotIn('未来按键',prompt)
 
 
 if __name__ == '__main__':
