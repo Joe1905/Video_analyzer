@@ -37,7 +37,7 @@ async function refresh(){
   if(ready)$('open').href=current.viewer_url;else{$('open').removeAttribute('href');$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
   $('empty-title').textContent=ready?'手机已就绪':'手机暂未就绪';
   $('empty-message').textContent=ready?'点击连接手机，开始操作。':'控制台将在手机就绪后开放，请稍后刷新。';
- }catch(error){current=null;$('badge').textContent='读取失败';$('badge').className='badge error';$('message').textContent='无法读取手机状态，请稍后刷新。';$('connect').disabled=true;$('open').hidden=true;$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
+ }catch(error){current=null;$('badge').textContent='读取失败';$('badge').className='badge error';$('message').textContent='无法读取手机状态，请稍后刷新。';$('network').textContent='无法读取出口状态。';$('connect').disabled=true;$('open').hidden=true;$('viewer').hidden=true;$('viewer').removeAttribute('src');$('empty').hidden=false;}
  finally{reading=false;$('refresh').disabled=false;updateControls();}
 }
 async function power(action){
