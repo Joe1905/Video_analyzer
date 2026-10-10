@@ -12,7 +12,7 @@ from pathlib import Path
 from video_performance_context import validate_report
 from video_performance_context import load_performance_context, build_report_facts
 from visual_analysis_cache import valid_analysis
-from assisted_video_review import VERSION as REVIEW_VERSION
+from assisted_video_review import VERSION as REVIEW_VERSION, LOGIC_VERSION
 
 _review_lock = threading.Lock()
 REPORT_KEYS = ('report_version','summary', '内容拆解', '表现诊断', '优先修改', '原片镜头拆解', '数据限制', '采集数据来源',
@@ -27,6 +27,11 @@ def needs_collection_refresh(report, current):
     if not report or not build_report_facts({'timeline':[]},current)['retention']['adjacent_second_changes']:return False
     previous=report.get('采集数据来源',{})
     return any(previous.get(k)!=current.get(k) for k in ('collection_id','collected_at','collection_source','retention'))
+
+
+def needs_logic_refresh(report):
+    return bool(report and (report.get('report_version') != REVIEW_VERSION or
+                           report.get('拆解流程', {}).get('version') != LOGIC_VERSION))
 
 
 def saved_report(root, video_id):
@@ -94,7 +99,7 @@ def run_review(workspace, job):
     with _review_lock:
         cached=saved_report(root,vid)
         current=load_performance_context(root,vid)
-        refresh=needs_collection_refresh(cached,current) or bool(cached and cached.get('report_version') != REVIEW_VERSION)
+        refresh=needs_collection_refresh(cached,current) or needs_logic_refresh(cached)
         if cached and not job.get('force') and not refresh:
             job.update(done=1, message='复盘已完成。')
             return
@@ -138,7 +143,7 @@ def review_state(workspace, pid, vid):
     related = job and job.get('action') == 'review' and job.get('video_id') == vid
     active = job and job['status'] in ('running', 'queued')
     current=load_performance_context(workspace.ROOT,vid)
-    decomposition_outdated=bool(report and report.get('report_version') != REVIEW_VERSION)
+    decomposition_outdated=needs_logic_refresh(report)
     outdated=needs_collection_refresh(report,current) or decomposition_outdated
     status = 'processing' if related and active else 'failed' if outdated and related and job['status']=='failed' else 'missing' if outdated else 'ready' if report else 'waiting' if active else 'failed' if related and job['status'] == 'failed' else 'missing'
     completed='复盘已完成。'

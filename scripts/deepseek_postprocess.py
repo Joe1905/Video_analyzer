@@ -348,7 +348,7 @@ def main() -> int:
             audit_result['证据时间轴'] = evidence
             audit_result['人工补充'] = args.logic_note[:4000]
             audit_result['事件拆解'] = event_evidence
-            audit_result['拆解流程'] = {'version': 1, 'logic_blinded_to_performance': True,
+            audit_result['拆解流程'] = {'version': assisted.LOGIC_VERSION, 'logic_blinded_to_performance': True,
                 'analysis_model': args.model, 'reasoning_effort': args.reasoning_effort}
             audit_result['数据限制'] = list(dict.fromkeys(audit_result['数据限制'] + [
                 '业务指标来自历史采集快照；未提供点击、订单、GMV和投流记录，不能判断成交效果。',

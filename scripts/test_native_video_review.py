@@ -66,7 +66,7 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(job['force']);self.assertEqual(job['logic_note'],'主推玩偶，胸针是剧情道具')
 
     def test_cached_report_does_not_start_pipeline(self):
-        with patch.object(review,'saved_report',return_value={'summary':'cached','report_version':review.REVIEW_VERSION}),patch.object(review.subprocess,'run') as run:
+        with patch.object(review,'saved_report',return_value={'summary':'cached','report_version':review.REVIEW_VERSION,'拆解流程':{'version':review.LOGIC_VERSION}}),patch.object(review.subprocess,'run') as run:
             review.run_review(self.ws,self.job)
         run.assert_not_called();self.ws.prepare_media.assert_not_called()
         self.assertEqual(self.job['done'],1)
@@ -79,6 +79,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(run.call_count,1)
         self.assertTrue(run.call_args.args[0][1].endswith('deepseek_postprocess.py'))
         self.ws.prepare_media.assert_not_called()
+
+    def test_logic_revision_refreshes_without_changing_event_format(self):
+        old={'summary':'old','report_version':review.REVIEW_VERSION,'拆解流程':{'version':1}}
+        self.assertTrue(review.needs_logic_refresh(old))
+        old['拆解流程']['version']=review.LOGIC_VERSION
+        self.assertFalse(review.needs_logic_refresh(old))
 
     def test_saved_extraction_reused_for_existing_pipeline(self):
         media=self.root/'videos'/review.filename(self.vid)
