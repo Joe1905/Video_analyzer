@@ -34,6 +34,7 @@ from io import BytesIO
 from storyboard import StoryboardService
 import market_discovery
 import virphone
+import duoplus
 from vision_provider import get_status as get_vision_status
 
 # SociaVault TikTok endpoints (mirrored from sociavault_tiktok.py)
@@ -446,6 +447,7 @@ NAV_ITEMS = [
 ]
 NAV_ITEMS.append({"key": "video-production", "href": "http://192.168.1.254:8501", "label": "视频制作", "title": "NarratoAI 原版制作试验", "icon": '<path d="M3 5h18v14H3z"/><path d="m10 9 5 3-5 3z"/>'})
 NAV_ITEMS.append({"key": "vir-phone", "href": "/vir-phone", "label": "virPhone", "title": "虚拟手机", "icon": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/>'})
+NAV_ITEMS.append({"key": "duoplus", "href": "/duoplus", "label": "Duoplus云手机", "title": "DuoPlus 脚本控制", "icon": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/>'})
 if not PROXY_POOL_ENABLED:
     NAV_ITEMS = [item for item in NAV_ITEMS if item["key"] != "proxy"]
 APP_NAV_CSS = """
@@ -14357,6 +14359,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if duoplus.handle(self, parsed, DATA_DIR, json_response):
+            return
+        if parsed.path == "/duoplus":
+            page = (SCRIPTS_DIR / "static" / "duoplus.html").read_text(encoding="utf-8")
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
         if observation_proxy.handle(self, proxy_pool.novnc_port_plan()["allowed_ports"]):
             return
         if market_discovery.handle(self, parsed, list_mcp_bridge_tools, execute_prefixed_tool):
@@ -15048,6 +15055,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if duoplus.handle(self, parsed, DATA_DIR, json_response):
+            return
         if parsed.path == "/api/virphone/power":
             if not virphone.allowed_request(self, write=True):
                 return json_response(self, HTTPStatus.FORBIDDEN, {"error": "仅允许可信局域网页面操作。"})
