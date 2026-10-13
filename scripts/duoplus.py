@@ -178,7 +178,8 @@ def handle(handler, parsed, data_dir, respond):
                         action_result = submit(config, phone, step["action"], step.get("params", {}))
                         screen = submit(config, phone)
                         logs.append({"step": index, "action": step["action"], "success": True,
-                                     "result": action_result})
+                                     "result": {key: value for key, value in action_result.items()
+                                                if key != "screenshot"}})
                     except (ValueError, requests.RequestException):
                         # Never retry a mutating action: a timeout may hide successful execution.
                         respond(handler, 502, {"error": f"第 {index} 步未能确认成功，脚本已停止。请刷新屏幕确认后再操作。",

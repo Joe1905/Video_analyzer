@@ -70,6 +70,16 @@ class DuoPlusTest(unittest.TestCase):
                 self.assertEqual(len(result["logs"]), 1)
                 self.assertEqual(submit.call_count, 4)
 
+    def test_action_log_does_not_duplicate_screenshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(duoplus, "get_phone", return_value={}), patch.object(duoplus, "submit", side_effect=[
+                {"success": True}, {"success": True, "screenshot": "large-image", "current_app": "tiktok"},
+                {"success": True, "screenshot": "latest-image"}]):
+                status, result = self.call(directory, "/api/duoplus/run", {"image_id": "phone-1", "steps": [{"action": "PAGE_BACK"}]})
+                self.assertEqual(status, 200)
+                self.assertNotIn("screenshot", result["logs"][0]["result"])
+                self.assertEqual(result["screen"]["screenshot"], "latest-image")
+
 
 if __name__ == "__main__":
     unittest.main()
