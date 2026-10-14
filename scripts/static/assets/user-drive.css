@@ -14,3 +14,23 @@
 @media(prefers-reduced-motion:reduce){.ud-dialog *{transition:none!important}}
 
 .ud-file-icon.ud-video-thumb{background:#000;border-color:#1d2632;color:#a7b1bd;overflow:hidden}.ud-video-thumb img{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+
+/* Keep controls in view; only the file list scrolls. Both entry points share this layout. */
+.ud-dialog{height:min(760px,calc(var(--app-height,100dvh) - 40px));max-height:calc(var(--app-height,100dvh) - 40px)}
+.ud-dialog[open]{display:flex;flex-direction:column}.ud-dialog .ud-head,.ud-dialog .ud-footer{flex-shrink:0}
+.ud-dialog .ud-body{display:flex;flex-direction:column;flex:1;min-height:0;max-height:none;overflow:hidden}
+.ud-body> :not(.ud-files){flex-shrink:0}.ud-dialog .ud-files{overflow:auto;min-height:0;flex:1;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:16px}
+.ud-table-head,.ud-file{grid-template-columns:minmax(0,1fr) 75px 110px 112px}.ud-dialog .ud-sort{border:1px solid var(--ud-line);border-radius:8px;background:#fff;padding:7px;color:var(--ud-ink);font:inherit;font-size:12px;max-width:125px}
+.ud-tools{flex-wrap:wrap;gap:10px}.ud-search{flex:1;min-width:150px}.ud-dialog .ud-icon-btn{width:36px;height:36px}.ud-dialog .ud-title{min-width:0}.ud-title p{overflow-wrap:anywhere}
+.ud-embedded{position:static;width:100%;height:100%;max-height:100%;margin:0 auto;border-radius:16px;box-shadow:0 4px 24px #14233608;max-width:1200px}.ud-embedded .ud-head{padding-top:22px}.ud-embedded .ud-footer{margin-top:0}
+.ud-preview{width:min(900px,calc(100vw - 24px));max-height:calc(var(--app-height,100dvh) - 24px);padding:16px;border:1px solid #e3e7eb;border-radius:16px;background:#fff;color:#263548;overflow:auto}.ud-preview::backdrop{background:#182838b0;backdrop-filter:blur(5px)}.ud-preview-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}.ud-preview-head strong{flex:1;min-width:0;overflow-wrap:anywhere;font:600 14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}.ud-preview button{border:1px solid #e3e7eb;border-radius:8px;background:#fff;padding:8px 12px;white-space:nowrap;cursor:pointer}.ud-preview video{display:block;width:100%;max-height:calc(var(--app-height,100dvh) - 150px);background:#000}.ud-preview p{font-size:12px;color:#7a8695}
+@media(max-width:640px){
+  .ud-dialog{height:calc(var(--app-height,100dvh) - 16px);max-height:calc(var(--app-height,100dvh) - 16px)}
+  .ud-dialog .ud-head{padding:14px}.ud-title p{font-size:11px}.ud-mark{width:38px;height:38px}
+  .ud-dialog .ud-body{padding:0 14px}.ud-dialog .ud-overview{flex-direction:row;align-items:center;gap:8px;padding:9px}.ud-owner{max-width:135px}.ud-private{font-size:10px}.ud-retention{max-width:116px;font-size:10px}.ud-retention svg{display:none}
+  .ud-drop{margin-top:12px;padding:12px;gap:8px}.ud-drop-icon{display:none}.ud-drop-copy strong{font-size:12px}.ud-drop-copy p{max-width:145px;font-size:10px}.ud-drop .ud-btn{margin-left:0;padding:9px 11px}
+  .ud-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;margin:14px 0 10px;gap:8px}.ud-tabs{gap:0}.ud-dialog .ud-tab{padding:7px 6px;font-size:12px}.ud-search{min-width:0;grid-column:1;grid-row:2}.ud-dialog .ud-sort{grid-column:2;grid-row:2;max-width:114px}.ud-tools>[data-refresh]{grid-column:2;grid-row:1;justify-self:end}
+  .ud-table-head,.ud-file{grid-template-columns:minmax(0,1fr) 108px;gap:6px}.ud-file{padding:12px 0}.ud-file-actions{gap:0}.ud-file-name{font-size:13px}.ud-expiry{font-size:10px}.ud-expiry small{margin-left:3px}.ud-file-sub{font-size:10px}
+  .ud-dialog .ud-footer{padding:10px 14px;margin-top:0}.ud-footer-note{max-width:60%}.ud-dialog.ud-embedded{height:100%;max-height:100%;border:0;border-radius:0}.ud-embedded .ud-footer-note{max-width:100%}
+}
+@media(max-height:600px){.ud-dialog .ud-title p,.ud-drop-copy p{display:none}.ud-dialog .ud-head{padding-top:10px;padding-bottom:10px}.ud-drop{margin-top:8px;padding:8px}.ud-tools{margin-top:8px;margin-bottom:8px}.ud-overview{padding-top:6px;padding-bottom:6px}}

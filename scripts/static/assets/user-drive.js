@@ -18,6 +18,17 @@
     <div class="ud-footer"><span class="ud-footer-note" data-footer-note>临时存放，轻装流转。重要文件请另行备份。</span><div class="ud-footer-actions"><button class="ud-btn" data-done>完成</button><button class="ud-btn ud-primary" data-use hidden disabled>使用此视频</button></div></div>`;
   document.body.append(dialog);
   const $ = selector => dialog.querySelector(selector);
+  const mount = document.getElementById('driveMount');
+  if (mount) { mount.replaceChildren(dialog); dialog.classList.add('ud-embedded'); $('[data-close]').hidden = true; $('[data-done]').hidden = true; }
+  const sort = document.createElement('select'); sort.className = 'ud-sort'; sort.setAttribute('aria-label', '文件排序');
+  sort.innerHTML = '<option value="recent">最近上传</option><option value="name">名称排序</option><option value="size">文件大小</option><option value="expiry">即将到期</option>';
+  $('.ud-tools').insertBefore(sort, $('[data-refresh]')); sort.onchange = () => render();
+  const preview = document.createElement('dialog'); preview.className = 'ud-preview'; preview.setAttribute('aria-label', '视频预览');
+  preview.innerHTML = '<div class="ud-preview-head"><strong></strong><button type="button" aria-label="关闭视频预览">关闭</button></div><video controls playsinline preload="metadata"></video><p>无法播放时，可下载后在本地打开。</p>';
+  document.body.append(preview);
+  function closePreview() { const media = preview.querySelector('video'); media.pause(); media.removeAttribute('src'); media.load(); preview.close(); }
+  preview.querySelector('button').onclick = closePreview;
+  preview.oncancel = event => { event.preventDefault(); closePreview(); };
   let selectVideo = null, ownerToken = '', files = [], filter = 'all', selected = '', pendingDelete = '', busy = false, xhr = null, cancelled = false, generation = 0, authenticated = false;
   function notice(message = '', error = false) { $('[data-notice]').hidden = !message; $('[data-notice]').textContent = message; $('[data-notice]').classList.toggle('ud-error', error); }
   function ensureOwner() { if (!ownerToken || ownerToken !== token()) throw new Error('请先在邻聊选择账户，或重新打开网盘。'); }
@@ -79,11 +90,11 @@
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); queue.push(entry.target); next(); }
-    }, {root:$('.ud-body'), rootMargin:'80px'});
+    }, {root:$('[data-files]'), rootMargin:'80px'});
     stopThumbnails = () => { abort.abort(); observer.disconnect(); queue.length = 0; };
     dialog.querySelectorAll('[data-thumbnail]').forEach(element => {
       const cached = thumbnailCache.get(element.dataset.thumbnail);
-      if (cached) show(element, cached); else observer.observe(element);
+      if (cached) show(element, cached); else if (files.find(f => f.id === element.dataset.thumbnail)?.size <= 2 * 1024 ** 3) observer.observe(element);
     });
   }
   dialog.addEventListener('close', () => { stopThumbnails(); thumbnailCache.clear(); });
@@ -92,6 +103,7 @@
     const query = $('input[type=search]').value.trim().toLowerCase();
     const eligible = files.filter(f => !selectVideo || (video(f) && f.size <= 2 * 1024 ** 3));
     const visible = eligible.filter(f => (filter === 'all' || (filter === 'video' ? video(f) : !video(f))) && f.name.toLowerCase().includes(query));
+    visible.sort((a, b) => sort.value === 'name' ? a.name.localeCompare(b.name, 'zh-CN', {numeric:true}) : sort.value === 'size' ? b.size - a.size : sort.value === 'expiry' ? a.expires_at - b.expires_at : b.created_at - a.created_at);
     $('[data-count]').textContent = `${visible.length} 个${selectVideo ? '可用视频' : '文件'} · ${size(visible.reduce((sum, f) => sum + f.size, 0))}`;
     $('[data-files]').innerHTML = visible.map(f => {
       const remaining = f.expires_at - Date.now() / 1000;
@@ -99,6 +111,12 @@
       const suffix = f.name.includes('.') ? f.name.split('.').pop().slice(0, 8) : 'FILE';
       return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : ''}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
     }).join('') || empty(query ? '没有找到这个文件' : selectVideo ? '还没有可用的视频' : '这里是你的临时文件空间', query ? '换个关键词，或清空搜索试试。' : selectVideo ? '请先在邻聊网盘上传 MP4、MOV、M4V 或 WebM 视频，单个不超过 2 GB。' : '拖入视频或文件，之后可直接在 Proxy 发布任务中选用。');
+    if (!selectVideo) dialog.querySelectorAll('[data-id]').forEach(row => {
+      const file = files.find(f => f.id === row.dataset.id);
+      if (!video(file) || file.size > 2 * 1024 ** 3) return;
+      const button = document.createElement('button'); button.className = 'ud-icon-btn'; button.dataset.preview = file.id; button.setAttribute('aria-label', `预览 ${file.name}`); button.title = '预览视频'; button.innerHTML = icon('video');
+      row.querySelector('.ud-file-actions').prepend(button);
+    });
     loadThumbnails();
     $('[data-use]').disabled = !eligible.some(f => f.id === selected);
     if (selectVideo) $('[data-footer-note]').textContent = selected ? `已选：${files.find(f => f.id === selected)?.name || ''}` : '选中一个视频后，点击“使用此视频”。';
@@ -128,25 +146,27 @@
       xhr.upload.onprogress = event => { if (event.lengthComputable) { const value = Math.round(event.loaded / event.total * 100); $('progress').value = value; $('[data-percent]').textContent = value === 100 ? '保存中…' : `${value}%`; } };
       xhr.onload = () => { let result = {}; try { result = JSON.parse(xhr.responseText); } catch (_) {} if (session !== token()) reject(new Error('账户已切换，上传已停止。')); else if (xhr.status >= 200 && xhr.status < 300) resolve(result); else reject(new Error(result.error || '上传失败，请重试。')); };
       xhr.onerror = () => reject(new Error('网络中断，未完成的文件请重新上传。'));
-      xhr.onabort = () => reject(new Error('已取消上传。'));
+      xhr.onabort = () => reject(new Error('已取消上传，尚未完成的文件未保存。'));
       const form = new FormData(); form.append('file', file); xhr.send(form);
     });
   }
   async function uploadFiles(list) {
     if (busy || !authenticated || selectVideo || !list.length) return;
     busy = true; cancelled = false; $('[data-upload]').disabled = true; $('[data-input]').disabled = true; $('[data-progress]').hidden = false; notice();
-    let completed = 0;
+    let completed = 0, failed = 0;
+    const errors = [];
     try {
-      for (const file of list) {
+      for (const [index, file] of list.entries()) {
         ensureOwner(); if (cancelled) break;
-        if (!file.size || file.size > 10 * 1024 ** 3) throw new Error(`${file.name}：文件为空或超过 10 GB。`);
-        $('[data-progress-name]').textContent = file.name; $('[data-progress-note]').textContent = `第 ${completed + 1} / ${list.length} 个 · ${size(file.size)} · 上传时请勿关闭页面`;
+        if (!file.size || file.size > 10 * 1024 ** 3) { failed++; errors.push(`${file.name}：文件为空或超过 10 GB。`); continue; }
+        $('[data-progress-name]').textContent = file.name; $('[data-progress-note]').textContent = `第 ${index + 1} / ${list.length} 个 · ${size(file.size)} · 上传时请勿关闭页面`;
         $('progress').value = 0; $('[data-percent]').textContent = '0%';
-        await upload(file); completed++;
+        try { await upload(file); completed++; }
+        catch (error) { if (cancelled) break; ensureOwner(); failed++; errors.push(`${file.name}：${error.message}`); }
       }
-      notice(`已上传 ${completed} 个文件，保留至 ${date(Date.now() / 1000 + 15 * 86400)}。`);
+      notice(`已上传 ${completed} 个文件${cancelled ? '，上传已取消' : failed ? `，${failed} 个失败` : `，保留至 ${date(Date.now() / 1000 + 15 * 86400)}`}。${errors.join(' ')}`, failed > 0);
     } catch (error) { notice(`${completed ? `已完成 ${completed} 个文件。` : ''}${error.message}`, !cancelled); }
-    finally { xhr = null; busy = false; $('[data-progress]').hidden = true; $('[data-input]').disabled = false; $('[data-input]').value = ''; await refresh(); }
+    finally { xhr = null; busy = false; $('[data-progress]').hidden = true; $('[data-input]').disabled = false; $('[data-input]').value = ''; if (ownerToken !== token() && mount && token()) await window.openUserDrive(); else await refresh(); }
   }
   $('[data-upload]').onclick = () => $('[data-input]').click();
   $('[data-input]').onchange = event => uploadFiles([...event.target.files]);
@@ -163,6 +183,17 @@
     try {
       ensureOwner();
       if (selectVideo) { selected = row.dataset.id; render(); $(`input[value="${selected}"]`)?.focus(); return; }
+      if (event.target.closest('[data-preview]')) {
+        const session = ownerToken;
+        event.target.closest('button').disabled = true;
+        try {
+          const payload = await request(`/api/lan-chat/drive/${row.dataset.id}/preview`, {method:'POST'});
+          if (!dialog.open || session !== ownerToken) return;
+          preview.querySelector('strong').textContent = files.find(f => f.id === row.dataset.id)?.name || '视频预览';
+          preview.querySelector('video').src = payload.url; preview.showModal();
+        } finally { event.target.closest('button').disabled = false; }
+        return;
+      }
       if (event.target.closest('[data-delete]')) { pendingDelete = row.dataset.id; render(); return; }
       if (event.target.closest('[data-keep]')) { pendingDelete = ''; render(); return; }
       if (event.target.closest('[data-confirm-delete]')) { event.target.disabled = true; await request(`/api/lan-chat/drive/${row.dataset.id}/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); pendingDelete = ''; await refresh(); notice('文件已删除。'); }
@@ -174,7 +205,7 @@
   };
   $('[data-files]').onchange = event => { if (event.target.matches('input[type=radio]')) { selected = event.target.value; render(); $(`input[value="${selected}"]`)?.focus(); } };
   $('[data-use]').onclick = () => { try { ensureOwner(); const file = files.find(f => f.id === selected); if (!file || file.expires_at <= Date.now() / 1000) throw new Error('视频已过期，请刷新后重新选择。'); selectVideo(file, ownerToken); dialog.close(); } catch (error) { notice(error.message, true); } };
-  function close() { if (busy) { notice('文件正在上传，完成后可关闭；也可以点击进度条旁的取消按钮。'); return; } dialog.close(); generation++; }
+  function close() { if (mount) return; if (busy) { notice('文件正在上传，完成后可关闭；也可以点击进度条旁的取消按钮。'); return; } closePreview(); dialog.close(); generation++; }
   $('[data-close]').onclick = close; $('[data-done]').onclick = close;
   dialog.oncancel = event => { if (event.target !== dialog) return; event.preventDefault(); close(); };
   window.openUserDrive = async callback => {
@@ -183,7 +214,7 @@
     selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
     dialog.classList.toggle('ud-picker', Boolean(selectVideo));
     $('[data-action-title]').textContent = selectVideo ? '选择' : '操作';
-    $('#ud-title').textContent = selectVideo ? '选择网盘视频' : '我的网盘';
+    $('#ud-title').textContent = selectVideo ? '选择云盘视频' : '我的云盘';
     $('[data-subtitle]').textContent = selectVideo ? '直接使用已上传的视频，无需再次上传。' : '视频与文件，随时存取。';
     $('[data-drop]').hidden = Boolean(selectVideo); $('[data-use]').hidden = !selectVideo; $('[data-use]').disabled = true; $('[data-upload]').disabled = true;
     $('[data-done]').textContent = selectVideo ? '取消' : '完成';
@@ -191,9 +222,10 @@
     dialog.querySelectorAll('[data-filter]').forEach(b => { b.hidden = Boolean(selectVideo) && b.dataset.filter !== 'video'; b.setAttribute('aria-pressed', String(b.dataset.filter === filter)); });
     $('input[type=search]').value = ''; $('[data-count]').textContent = ''; $('[data-owner]').textContent = '正在读取账户'; $('[data-avatar]').textContent = '·'; notice();
     $('[data-files]').innerHTML = empty('正在读取文件', '马上就好…');
-    if (!dialog.open) dialog.showModal(); await refresh();
+    if (!dialog.open) { if (mount) dialog.setAttribute('open', ''); else dialog.showModal(); } await refresh();
   };
-  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); dialog.close(); files = []; $('[data-files]').replaceChildren(); } });
+  window.isUserDriveBusy = () => { if (busy) notice('请先完成或取消上传，再切换账户。'); return busy; };
+  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); closePreview(); dialog.close(); files = []; $('[data-files]').replaceChildren(); } });
   window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });
   document.querySelectorAll('[onclick="openUserDrive()"], [onclick="chooseDriveVideo()"]').forEach(button => { button.classList.add('ud-entry'); const label = button.textContent; button.innerHTML = `${icon('folder')}<span>${esc(label)}</span>`; button.setAttribute('aria-label', label === '网盘' ? '我的网盘' : label); });
 })();
