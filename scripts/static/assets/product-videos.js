@@ -84,6 +84,7 @@ function renderOverview() {
   $("selectedImage").innerHTML=image(p,null,false);
   $("selectedMeta").textContent=p.handle?`@${p.handle} · ${p.pool_linked?"已关联账号池":"未关联账号池 · 采集留存禁用"}`:`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
   $("editProduct").hidden=Boolean(p.handle);$("deleteProduct").hidden=Boolean(p.handle);$("shopLink").textContent=p.handle?"账号主页 ↗":"商品主页 ↗";
+  $("deleteAccount").hidden=!p.product_id.startsWith("account:manual:");$("deleteAccount").disabled=busy();
   $("sourceEyebrow").textContent=p.handle?"ACCOUNT VIDEO LIBRARY":"PRODUCT VIDEO LIBRARY";
   $("summaryNote").innerHTML=p.handle?"查询最新一页<br><span>历史视频手动加载，已有数据持续保留。</span>":"发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span>";
   $("shopLink").href=url(p.product_url)||`https://www.tiktok.com/shop/pdp/${p.product_id}`;
@@ -253,6 +254,21 @@ async function saveProduct(event) {
 }
 function openDelete() {$("deleteName").textContent=current()?.product_name;inlineError("deleteError");$("deleteDialog").showModal();}
 async function deleteProduct() {$("confirmDelete").disabled=true;try{await api("/api/proxy/products/delete",{product_id:state.selected});$("deleteDialog").close();await loadProducts();toast("商品已删除");}catch(e){inlineError("deleteError",e.message);}finally{$("confirmDelete").disabled=false;}}
+function openDeleteAccount() {
+  const account=current();if(!account?.product_id.startsWith("account:manual:"))return;
+  state.deletingAccount={...account};$("deleteAccountName").textContent=`@${account.handle}`;
+  $("deleteAccountNote").textContent="只移除视频列表中的手动账号记录，保留已有视频与分析数据；重新添加相同用户名可恢复。"+(account.pool_linked?"该账号已关联 IP 池，删除手动记录后，账号池来源仍会显示，IP 绑定不受影响。":"");
+  inlineError("deleteAccountError");$("deleteAccountDialog").showModal();
+}
+async function deleteAccount() {
+  const account=state.deletingAccount;if(!account||$("confirmDeleteAccount").disabled)return;
+  $("confirmDeleteAccount").disabled=true;inlineError("deleteAccountError");
+  try {
+    await api('/api/product-videos/accounts/delete',{product_id:account.product_id});
+    $("deleteAccountDialog").close();await loadProducts();toast("手动账号已删除，历史数据已保留");
+  } catch(error) {inlineError("deleteAccountError",error.message);}
+  finally {$("confirmDeleteAccount").disabled=false;}
+}
 async function openMedia(vid) {
   state.media=state.videos.find(v=>v.video_id===vid);state.mediaState=null;state.playRequested="";if(!state.media)return;
   $("mediaCaption").textContent=state.media.title||"无标题视频";$("mediaOriginal").href=url(state.media.url);
@@ -515,6 +531,8 @@ document.addEventListener("click",event=>{
     if(target.id==="refreshTables")return loadTables(true);
     if(target.id==="confirmTable")return writeTable();
     if(target.dataset.close){$(target.dataset.close).close();return;}
+    if(target.id==="deleteAccount")return openDeleteAccount();
+    if(target.id==="confirmDeleteAccount")return deleteAccount();
     if(target.dataset.library)return switchLibrary(target.dataset.library);
     if(target.dataset.page){state.page+=Number(target.dataset.page);renderVideos();$("videos").scrollIntoView({block:"start"});return;}
     if(target.dataset.product)return selectProduct(target.dataset.product);

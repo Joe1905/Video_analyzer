@@ -60,6 +60,61 @@ class ManualAccountTests(unittest.TestCase):
         with workspace.database() as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM video_library_accounts').fetchone()[0], 0)
 
+    def test_legacy_manual_accounts_migrate_without_loss(self):
+        with proxy_pool.connect() as conn:
+            conn.execute('CREATE TABLE video_library_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT NOT NULL UNIQUE)')
+            conn.execute("INSERT INTO video_library_accounts(handle) VALUES ('yakuza0.3')")
+        account = self.add('yakuza0.3')
+        self.assertEqual(account['product_id'], 'account:manual:1')
+        workspace.delete_account({'product_id': account['product_id']})
+        self.assertEqual(workspace.accounts(), [])
+
+    def test_delete_and_restore_preserve_saved_data(self):
+        account = self.add('yakuza0.3')
+        pid = account['product_id']
+        workspace.save_video(pid, {'video_id': VID, 'views': 17})
+        inputs.save_orders(workspace, {'product_id': pid, 'video_id': VID, 'count': 4})
+        with workspace.database() as conn:
+            conn.execute('INSERT INTO account_video_pages VALUES (?,?,?)', (pid, 'saved-cursor', 1))
+        workspace.delete_account({'product_id': pid})
+        workspace.delete_account({'product_id': pid})  # Idempotent repeated requests.
+        self.assertEqual(workspace.accounts(), [])
+        with self.assertRaises(ValueError):
+            workspace.product(pid)
+        self.assertEqual(self.add('@YAKUZA0.3')['product_id'], pid)
+        state = workspace.snapshot(pid)
+        self.assertEqual(state['videos'][0]['views'], 17)
+        self.assertEqual(state['cursor'], 'saved-cursor')
+        self.assertTrue(state['has_more'])
+        self.assertEqual(inputs.input_state(workspace, pid, VID)['manual_orders']['count'], 4)
+        self.assertEqual(len(workspace.accounts()), 1)
+
+    def test_delete_linked_manual_account_preserves_pool(self):
+        manual = self.add()
+        pool_id = self.pool_account(bound=True)
+        workspace.delete_account({'product_id': manual['product_id']})
+        self.assertEqual(workspace.accounts()[0]['product_id'], f'account:{pool_id}')
+        with workspace.database() as conn:
+            row = conn.execute('SELECT deleted_at,proxy_bound FROM tiktok_accounts WHERE id=?', (pool_id,)).fetchone()
+            self.assertEqual(tuple(row), ('', 1))
+        self.assertEqual(self.add()['product_id'], manual['product_id'])
+        self.assertEqual(workspace.product(manual['product_id'])['account_id'], pool_id)
+
+    def test_delete_rejects_invalid_ids_pool_accounts_and_busy_jobs(self):
+        self.pool_account()
+        for pid in ('account:1', '123', 'account:manual:../../test', 'account:manual:999999'):
+            with self.subTest(pid=pid), self.assertRaises(ValueError):
+                workspace.delete_account({'product_id': pid})
+        manual = self.add('yakuza0.3')
+        pid = manual['product_id']
+        workspace.save_job({'product_id': pid, 'status': 'running', 'owner': workspace._owner})
+        with self.assertRaisesRegex(ValueError, '正在处理'):
+            workspace.delete_account({'product_id': pid})
+        self.assertEqual(workspace.product(pid)['handle'], 'yakuza0.3')
+        workspace.save_job({'product_id': pid, 'status': 'running', 'owner': 'previous-process'})
+        workspace.delete_account({'product_id': pid})
+        self.assertEqual(len(workspace.accounts()), 1)
+
     def test_public_video_lookup_uses_normalized_handle_without_pool_account(self):
         account = self.add('https://www.tiktok.com/@Test.Creator')
         response = {'data': {'aweme_list': [{'aweme_id': VID, 'desc': 'Public video',
@@ -152,6 +207,34 @@ class ManualAccountTests(unittest.TestCase):
                     page.set_viewport_size({'width': 390, 'height': 844})
                     expect(page.locator('#collectReviewRetention')).to_be_visible()
                     page.screenshot(path=str(Path(folder) / 'manual-account-mobile.png'))
+                    page.locator('[data-close="reviewInputsDialog"]').click()
+                    page.locator('#addProduct').click()
+                    page.locator('#accountHandle').fill('yakuza0.3')
+                    validity = page.locator('#accountHandle').evaluate('el => ({type:el.type, pattern:el.pattern, valid:el.validity.valid})')
+                    self.assertEqual(validity, {'type': 'text', 'pattern': '', 'valid': True})
+                    with page.expect_request('**/api/product-videos/accounts') as request:
+                        page.locator('#saveAccount').click()
+                    self.assertEqual(request.value.post_data_json, {'handle': 'yakuza0.3'})
+                    expect(page.locator('#selectedName')).to_have_text('yakuza0.3')
+                    manual_pid = next(a['product_id'] for a in workspace.accounts() if a['handle'] == 'yakuza0.3')
+                    workspace.save_video(manual_pid, {'video_id': VID, 'title': 'Saved before deletion'})
+                    page.locator('#deleteAccount').click()
+                    expect(page.locator('#deleteAccountName')).to_have_text('@yakuza0.3')
+                    page.screenshot(path=str(Path(folder) / 'delete-account-mobile.png'))
+                    page.locator('#deleteAccountDialog [data-close="deleteAccountDialog"]').last.click()
+                    expect(page.locator('#selectedName')).to_have_text('yakuza0.3')
+                    page.locator('#deleteAccount').click()
+                    page.locator('#confirmDeleteAccount').click()
+                    expect(page.locator('#selectedName')).to_have_text('Creator')
+                    self.assertFalse(any(a['handle'] == 'yakuza0.3' for a in workspace.accounts()))
+                    page.reload(wait_until='networkidle')
+                    self.assertEqual(page.locator('.product-row').count(), 1)
+                    page.locator('#addProduct').click()
+                    page.locator('#accountHandle').fill('@yakuza0.3')
+                    page.locator('#saveAccount').click()
+                    expect(page.locator('#selectedName')).to_have_text('yakuza0.3')
+                    expect(page.locator('.video-card')).to_have_count(1)
+                    self.assertEqual(workspace.product(manual_pid)['handle'], 'yakuza0.3')
                 self.assertEqual(errors, [])
                 browser.close()
         finally:
