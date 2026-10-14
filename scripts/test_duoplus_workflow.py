@@ -185,6 +185,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual((normalized["params"]["x"], normalized["params"]["y"]), (67, 78))
         self.assertAlmostEqual(normalized["target_bounds"][0], 1000 * 28 / 720)
         self.assertEqual(decision["params"]["x"], 48)
+        nested = {**decision, "params": {**decision["params"], "coordinate_space": "pixels",
+                                        "target_bounds": decision["target_bounds"]}}
+        nested.pop("coordinate_space")
+        nested.pop("target_bounds")
+        self.assertEqual(workflow.normalize_recovery_coordinates(nested, encoded), normalized)
+        with self.assertRaises(ValueError):
+            workflow.normalize_recovery_coordinates({**nested, "coordinate_space": "relative"}, encoded)
         with self.assertRaises(ValueError):
             workflow.normalize_recovery_coordinates({**decision, "coordinate_space": "relative"}, encoded)
         with self.assertRaises(ValueError):
