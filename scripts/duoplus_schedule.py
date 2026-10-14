@@ -79,6 +79,9 @@ class Store:
                     status TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
                     result_json TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runs_card_time ON runs(card_key, started_at DESC);
+                CREATE TABLE IF NOT EXISTS run_events (
+                    run_id TEXT NOT NULL, seq INTEGER NOT NULL, event_json TEXT NOT NULL,
+                    PRIMARY KEY(run_id, seq));
                 CREATE TABLE IF NOT EXISTS phone_clocks (
                     image_id TEXT PRIMARY KEY, timezone TEXT NOT NULL,
                     clock_offset REAL NOT NULL, observed_at REAL NOT NULL);
@@ -178,6 +181,35 @@ class Store:
             raise ValueError("运行记录不存在。")
         return json.loads(row[0])
 
+    def append_event(self, run_id, event):
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM run_events WHERE run_id=? LIMIT 1", (run_id,)).fetchone():
+                old = db.execute("SELECT result_json FROM runs WHERE id=?", (run_id,)).fetchone()
+                for index, previous in enumerate(json.loads(old[0]).get("logs", []) if old else [], 1):
+                    db.execute("INSERT INTO run_events VALUES(?,?,?)",
+                               (run_id, index, json.dumps({**previous, "seq": index}, ensure_ascii=False)))
+            seq = db.execute("SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id=?", (run_id,)).fetchone()[0]
+            stored = {**event, "seq": seq, "timestamp": event.get("timestamp", time.time())}
+            db.execute("INSERT INTO run_events VALUES(?,?,?)", (run_id, seq, json.dumps(stored, ensure_ascii=False)))
+        return stored
+
+    def events(self, run_id, after=0, limit=100):
+        from duoplus_workflow import integer
+        after, limit = integer(after, 0, 2_147_483_647), integer(limit, 1, 200)
+        run = self.run(run_id)
+        with self.connection() as db:
+            latest = db.execute("SELECT MAX(seq) FROM run_events WHERE run_id=?", (run_id,)).fetchone()[0]
+            rows = db.execute("SELECT event_json FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?",
+                              (run_id, after, limit + 1)).fetchall()
+        events = [json.loads(row[0]) for row in rows] if latest else [
+            {**event, "seq": index} for index, event in enumerate(run.get("logs", []), 1) if index > after][:limit + 1]
+        summary = {key: value for key, value in run.items() if key not in {"logs", "screen", "evidence_directory"}}
+        page = events[:limit]
+        return {"run": summary, "events": page, "next_cursor": page[-1]["seq"] if page else after,
+                "has_more": len(events) > limit, "last_sequence": latest or len(run.get("logs", [])),
+                "terminal": run["status"] in TERMINAL}
+
     def history(self, card_key):
         with self.connection() as db:
             rows = db.execute("SELECT result_json FROM runs WHERE card_key=? ORDER BY started_at DESC LIMIT 30",
@@ -221,7 +253,8 @@ class Store:
         for row in rows:
             job = json.loads(row[0])
             job.update(status="interrupted", finished_at=now, error="服务重启，运行中断；没有自动重试手机动作。")
-            job.setdefault("logs", []).append({"kind": "error", "message": job["error"]})
+            event = self.append_event(job["id"], {"kind": "error", "message": job["error"], "timestamp": now})
+            job.setdefault("logs", []).append(event)
             self.put_run(job)
         for plan in self.schedules():
             if plan["active_run_id"]:

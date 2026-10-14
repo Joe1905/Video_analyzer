@@ -69,6 +69,16 @@ async function main() {
         data = preview;
       } else if (url === '/api/duoplus/workflow/run') {
         data = {id: 'offline-job-' + ++runs, status: 'queued', budget_seconds: 500};
+      } else if (url.startsWith('/api/duoplus/workflow/logs?id=')) {
+        const query = new URL(url, 'http://offline').searchParams;
+        const reportId = query.get('id');
+        if (delayedReport === reportId) await new Promise(resolve => { releaseReport = resolve; });
+        const report = reportDetails[reportId];
+        const after = Number(query.get('after'));
+        const limit = Number(query.get('limit'));
+        const logs = report.logs.map((event, index) => ({...event, seq: index + 1})).filter(event => event.seq > after);
+        data = {run: {...report, logs: undefined}, events: logs.slice(0, limit),
+          has_more: logs.length > limit, next_cursor: Math.min(after + limit, report.logs.length)};
       } else if (url.startsWith('/api/duoplus/workflow/job?id=')) {
         const reportId = url.split('id=')[1];
         if (reportDetails[reportId]) {

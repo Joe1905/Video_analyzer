@@ -418,10 +418,31 @@ class Runner:
 
     def log(self, kind, **details):
         with STATE_LOCK:
-            self.job["logs"].append({"kind": kind, "elapsed_seconds": round(time.monotonic() - self.job["started_monotonic"], 2), **details})
+            event = {**details, "kind": kind, "timestamp": time.time(),
+                     "stage": self.job.get("stage", "workflow"),
+                     "node_id": details.get("node_id", self.job.get("current_node")),
+                     "elapsed_seconds": round(time.monotonic() - self.job["started_monotonic"], 2)}
+            event["seq"] = self.job.get("log_sequence", 0) + 1
+            try:
+                if self.store:
+                    event = self.store.append_event(self.job["id"], event)
+            except Exception as exc:
+                self.job["log_error"] = "日志持久化失败：" + type(exc).__name__
+                self.job["cancel_reason"] = "日志持久化失败，停止工作流。"
+                self.event.set()
+            self.job.update(log_sequence=event["seq"], last_event_at=event["timestamp"])
+            if kind == "ai":
+                self.job["ai_calls"] = self.job.get("ai_calls", 0) + 1
+                self.job["total_tokens"] = self.job.get("total_tokens", 0) + details.get("usage", {}).get("total_tokens", 0)
+            self.job["logs"].append(event)
             self.job["logs"] = self.job["logs"][-500:]
             if self.store:
-                self.store.put_run(self.job)
+                try:
+                    self.store.put_run(self.job)
+                except Exception as exc:
+                    self.job["log_error"] = "日志持久化失败：" + type(exc).__name__
+                    self.job["cancel_reason"] = "日志持久化失败，停止工作流。"
+                    self.event.set()
 
     def prepare_phone(self):
         self.check()
@@ -432,15 +453,21 @@ class Runner:
                 raise ValueError("未找到定时计划指定的云手机。")
             if str(phone.get("status")) == "2":
                 self.log("power", message="到点提交一次开机请求；按平台计费。")
+                self.check()
                 result = duoplus.request(self.config, "/api/v1/cloudPhone/powerOn",
                                         {"image_ids": [self.job["image_id"]]}, deadline=self.deadline)
                 if self.job["image_id"] not in result.get("data", {}).get("success", []):
                     raise ValueError("开机请求未被接受；没有重复提交。")
+                self.log("power", message="开机请求已接受，等待设备就绪。")
                 phone["status"] = 10
+            notice = time.monotonic()
             while str(phone.get("status")) == "10":
                 self.wait(2000)
                 phone = next((row for row in duoplus.list_phones(
                     self.config, self.job["image_id"], self.deadline) if row.get("id") == self.job["image_id"]), {})
+                if time.monotonic() - notice >= 15:
+                    self.log("progress", message="等待云手机开机。", phone_status=phone.get("status"))
+                    notice = time.monotonic()
             self.check()
         return duoplus.get_phone(self.config, self.job["image_id"], self.deadline)
 
@@ -466,14 +493,23 @@ class Runner:
             encoded, mime = screenshot_payload(shot)
             screen["screenshot"] = f"data:image/{mime};base64,{encoded}"
             suffix = "jpg" if mime == "jpeg" else "png"
-            (self.directory / f"screen-{self.shot_count:03d}.{suffix}").write_bytes(base64.b64decode(encoded))
+            filename = f"screen-{self.shot_count:03d}.{suffix}"
+            (self.directory / filename).write_bytes(base64.b64decode(encoded))
+            self.job["last_screen"] = {"file": filename, "timestamp": time.time(),
+                                       "url": f"/api/duoplus/workflow/evidence?id={self.job['id']}&file={filename}"}
         with STATE_LOCK:
             self.job["screen"] = screen
+        self.log("observation", message="屏幕已读取", current_app=screen.get("current_app"),
+                 evidence=self.job.get("last_screen"))
         return screen
 
     def action(self, action, params):
         self.check()
         duoplus.validate_steps([{"action": action, "params": params}])
+        self.job["active_action"] = {"action": action, "params": copy.deepcopy(params),
+                                     "phase": "sending", "started_at": time.time()}
+        self.log("action_start", action=action, params=params, message="开始执行动作")
+        self.check()
         if action == "SLIDE_PAGE" and "duration" in params:
             command = swipe_command(params)
             result = duoplus.submit(self.config, self.phone, "SHELL_COMMAND",
@@ -481,9 +517,13 @@ class Runner:
                                     "wait_after": params.get("wait_after", 0)}, deadline=self.deadline)
         else:
             result = duoplus.submit(self.config, self.phone, action, params, deadline=self.deadline)
-        self.log("action", action=action, params=params, success=True,
-                 result={k: v for k, v in result.items() if k not in {"screenshot", "task_id"}})
+        self.job["active_action"]["phase"] = "observing"
+        self.log("action_result", action=action, params=params, success=True, message="动作已返回，读取画面验证")
         self.observe()
+        self.job["active_action"] = None
+        self.log("action", action=action, params=params, success=True,
+                 evidence=self.job.get("last_screen"),
+                 result={k: v for k, v in result.items() if k not in {"screenshot", "task_id"}})
 
     def ai(self, node, variables):
         task = node["data"]["conversation"]
@@ -545,13 +585,18 @@ class Runner:
             if action == "FOR_DATA":
                 topics = list(reversed(self.topics)) if data.get("reversal") else self.topics
                 for topic in topics:
+                    self.job["current_topic"] = topic
+                    self.log("topic", message="处理主题", topic=topic)
                     child_vars = dict(variables, **{"Search-Contents": topic})
                     self.graph_run(node["children"], child_vars)
             elif action == "FOR_TIMES":
                 low, high = interval(data, "fixed_value", "interval_min", "interval_max", 20)
                 count = random.randint(low, high)
                 self.log("loop", node_id=node["id"], count=count)
-                for _ in range(count):
+                for index in range(count):
+                    self.job["iteration"] = {"node_id": node["id"], "index": index + 1, "count": count}
+                    self.log("iteration", node_id=node["id"], message=f"浏览第 {index + 1}/{count} 轮",
+                             index=index + 1, count=count)
                     self.graph_run(node["children"], variables)
             elif action == "IF_CONDITION":
                 probability = number(data["condition_bean"]["random"][0]["value"], 0, 100)
@@ -575,12 +620,18 @@ class Runner:
                     raise SearchComplete()
             elif action == "EXECUTE_ADB":
                 self.check()
+                self.job["active_action"] = {"action": action, "params": {"command": data["adb_command"]},
+                                             "phase": "sending", "started_at": time.time()}
+                self.log("action_start", action=action, params={"command": data["adb_command"]}, message="开始执行 ADB")
+                self.check()
                 result = duoplus.request(self.config, "/api/v1/cloudPhone/command",
                                         {"image_id": self.phone["id"], "command": data["adb_command"]}, deadline=self.deadline)
                 if result.get("data", {}).get("success") is not True:
                     raise ValueError("关闭 TikTok 未确认成功，工作流已停止。")
+                self.job["active_action"]["phase"] = "observing"
                 self.log("adb", success=True, command=data["adb_command"])
                 self.observe()
+                self.job["active_action"] = None
             elif action == "OPEN_APP":
                 self.action(action, {"package_name": data["package_name"], "wait_after": randomized_wait(1200)})
             elif action == "PAGE_BACK":
@@ -617,10 +668,11 @@ class Runner:
         status, error = "complete", ""
         try:
             with STATE_LOCK:
-                self.job["status"] = "running"
+                self.job.update(status="running", stage="preparing")
             if self.store:
                 self.store.put_run(self.job)
             self.phone = self.prepare_phone()
+            self.job["stage"] = "resolution"
             size = duoplus.request(self.config, "/api/v1/cloudPhone/command",
                                    {"image_id": self.phone["id"], "command": "wm size"}, deadline=self.deadline)
             if size.get("data", {}).get("success") is not True:
@@ -628,6 +680,7 @@ class Runner:
             sizes = re.findall(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", size["data"].get("content", ""))
             if not sizes or sizes[-1] != ("1080", "1920"):
                 raise ValueError("模板基准为 1080×1920；当前设备尺寸不符，已停止。")
+            self.job["stage"] = "workflow"
             self.graph_run(self.graph, {})
             if self.job["mode"] == "search":
                 raise ValueError("未执行到搜索 AI 节点。")
@@ -642,8 +695,12 @@ class Runner:
                 for secret in (self.config.get("api_key"), os.getenv("DEEPSEEK_API_KEY")):
                     if secret:
                         error = error.replace(secret, "[已隐藏]")
-            self.log("error", message=error)
+            self.job.update(error_type=type(exc).__name__, failed_node=self.job.get("current_node"),
+                            failed_action=copy.deepcopy(self.job.get("active_action")))
+            self.log("error", message=error, error_type=type(exc).__name__,
+                     failed_action=self.job.get("failed_action"), evidence=self.job.get("last_screen"))
         finally:
+            self.job["stage"] = "cleanup"
             if self.job["auto_power_off"]:
                 try:
                     self.log("power", message="提交任务结束后的关机请求。")
@@ -658,10 +715,15 @@ class Runner:
                     self.job["power_off_requested"] = False
             with STATE_LOCK:
                 self.job.update(status=status, error=error, finished_at=time.time(),
+                                stage="finished", active_action=None,
                                 elapsed_seconds=round(time.monotonic() - self.job["started_monotonic"], 2))
+            self.log("finish", message={"complete": "运行完成。", "failed": "运行失败。", "cancelled": "运行已停止。"}[status])
             try:
                 if self.store:
-                    self.store.put_run(self.job)
+                    try:
+                        self.store.put_run(self.job)
+                    except Exception as exc:
+                        self.job["log_error"] = "日志持久化失败：" + type(exc).__name__
                 (self.directory / "result.json").write_text(json.dumps(snapshot(self.job["id"]), ensure_ascii=False, indent=2), encoding="utf-8")
             finally:
                 duoplus.LOCK.release()
@@ -766,6 +828,32 @@ def handle(handler, parsed, data_dir, respond):
             else:
                 from duoplus_schedule import Store
                 result = Store(data_dir).run(job_id)
+        elif handler.command == "GET" and path == "workflow/logs":
+            from duoplus_schedule import Store
+            query = parse_qs(parsed.query)
+            result = Store(data_dir).events(query.get("id", [""])[0], query.get("after", [0])[0],
+                                            query.get("limit", [100])[0])
+        elif handler.command == "GET" and path == "workflow/evidence":
+            query = parse_qs(parsed.query)
+            job_id, filename = query.get("id", [""])[0], query.get("file", [""])[0]
+            if not re.fullmatch(r"[a-f0-9]{32}", job_id) or not re.fullmatch(r"screen-\d{3,6}\.(png|jpg)", filename):
+                raise ValueError("截图标识无效。")
+            base = (data_dir.parent / "output" / "duoplus_workflows").resolve()
+            root = (base / job_id).resolve()
+            evidence = (root / filename).resolve()
+            if root.parent != base or evidence.parent != root or not evidence.is_file():
+                raise ValueError("截图不存在。")
+            raw = evidence.read_bytes()
+            if len(raw) > 6 * 1024 * 1024 or not (raw.startswith(b"\x89PNG\r\n\x1a\n") or raw.startswith(b"\xff\xd8\xff")):
+                raise ValueError("截图类型或大小无效。")
+            handler.send_response(200)
+            handler.send_header("Content-Type", "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/png")
+            handler.send_header("Content-Length", str(len(raw)))
+            handler.send_header("Cache-Control", "private, no-store")
+            handler.send_header("X-Content-Type-Options", "nosniff")
+            handler.end_headers()
+            handler.wfile.write(raw)
+            return True
         elif handler.command == "GET" and path in {"workflow/schedules", "workflow/history"}:
             from duoplus_schedule import Store, scheduler_running
             store = Store(data_dir)

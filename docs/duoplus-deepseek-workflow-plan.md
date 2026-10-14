@@ -226,6 +226,15 @@ DeepSeek 只能选择已开放的基础动作。屏幕文字和工作流内容�
 - 验证完成：56 项离线检查通过（工作流 26、基础 7、定时 14、前端 9），包含 120 组四方向手势采样及严格命令生成。提交 ab8d872 / 147f9c8 经 GitHub 同步到 4003；重启前确认 active_runs=0、enabled_schedules=0、/api/jobs=[]，只重启 4003 Web。健康检查 ok，工作流预览仍为 37 节点，页面时长标签和 500 秒预算正确；未发送任何云手机查询或动作。
 - 依据：https://help.duoplus.cn/docs/param-desc、https://help.duoplus.cn/docs/AI-kong-zhi-yun-ji-API、https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/input/InputShellCommand.java。
 
+## 增量日志接口与拟真验收准备
+
+- 用户授权继续真实测试，范围包含点赞、收藏、关注，不发布评论；主题仍为英文 `AI translator`。为了一个计费周期内覆盖三项互动，本次验收副本外层固定 1 轮、内层随机 3–4 次，三个授权互动分支触发率设为 100%，去掉评论分支；距离、时长、坐标与等待仍真实随机。原始官方 JSON 及正式循环范围/概率不变，副本随任务保存，不将覆盖性测试的概率当作正式概率。
+- 新增 `GET /api/duoplus/workflow/logs?id=<任务ID>&after=<最后seq>&limit=200`，返回 run 摘要、events、next_cursor、has_more、last_sequence、terminal。正式运行不依赖页面打开；客户端保存游标即可断线续读，结束后可读失败阶段、动作、耗时、模型调用/Token 与最后截图。
+- SQLite run_events 按任务独立递增序号持久化完整事件，不再受内存 500 条尾部限制；旧历史兼容，服务重启保留事件并记录中断，不重放手机动作。日志有真实时间戳、节点、阶段、动作发送/返回/观察状态、随机参数、循环进度和错误类型。
+- 新增 `GET /api/duoplus/workflow/evidence?id=<任务ID>&file=screen-001.png`，仅返回该任务保存的 PNG/JPEG，校验任务 ID、文件名与解析后的路径边界；不实时调用设备。报告分页读取完整事件，实际动作及失败记录可打开对应截图。
+- 日志存储失败会停止后续动作，但不能阻止关机清理；动作发送前先持久化尝试记录，失败保留 failed_node / failed_action.phase，结果不明不自动重试。
+- 开机前离线验证新增接口、游标、重启、500 条以上事件、截图路径校验、失败阶段及日志写入失败仍关机；再仅在 4003 激活和运行一次 500 秒预算的真实验收，全程监督并确认最终关机状态。
+
 ## 官方参考
 
 - https://help.duoplus.cn/docs/cloud-phone-list
