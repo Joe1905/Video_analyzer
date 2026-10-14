@@ -189,6 +189,11 @@ DeepSeek 只能选择已开放的基础动作。屏幕文字和工作流内容�
 - 真实任务 `400b0f23bae9428e8ba7099f90ab2954`：官方关闭/打开 TikTok、等待、主题提取均执行；进入搜索 AI 节点时因截图校验失败而停止，总耗时 50.53 秒。尚未调用模型、输入主题、提交搜索或打开结果，不能算搜索验收通过。
 - 实际返回 50,902 字节 WebP（RIFF / WEBP / VP8），原校验只接受 PNG/JPEG，离线夹具遗漏 WebP。修复为识别真实 WebP、使用已有 Pillow 转 PNG，同时统一截图证据扩展名及 MIME；增加裸 Base64 / data URL、模型输入、落盘格式及损坏图片阻断检查。
 - 自动关机请求接受后只读确认平台状态由 11 变为 2（已关机）；没有重复开机，没有创建第二次工作流。后续修复验证使用本次留存的真实截图，不发送手机动作。
+- 4003 Docker 回归通过 49 项：基础 7、工作流 19、调度 14、前端 9；包含新增 WebP 兼容检查。修复通过 GitHub 同步，提交 647e539。
+- 对本次留存的真实画面调用现有 DeepSeek 一次：PNG 转换成功，模型 1.5 秒返回首页搜索按钮坐标 (917,83)，使用 1,268 tokens；只读取决策，不下发手机动作。该补证证明真实截图 → 模型链路可用，不证明搜索或视频打开完成。记录保存在原任务目录 stored-screen-deepseek-check.json 和 verified-input.png。
+- 重启前确认 active_runs=0、enabled_schedules=0、/api/jobs=[]，仅重启 4003 Web 加载修复；首次健康检查早于监听启动而 connection refused，读取容器日志确认正常监听后健康检查 ok，真实失败记录在重启后仍可读取。4002/4004 未变更。
+- Windows 代理 7892 的 GitHub HTTPS 推送首次 Schannel TLS 握手失败（2026-10-14 15:00 附近）；立即切换同一代理的 OpenSSL + HTTP/1.1 后推送成功，没有直接反复重试。服务器经代理 7890 拉取成功。
+- 真实报告截图：C:/Users/admin/.codex/visualizations/2026/10/14/01a13852-6cec-7df3-be2e-183c6dca43ce/duoplus-real-single-test-report.png；本次搜索验收仍未通过，需要另一次真实执行验证输入、Top 结果和视频打开，本轮不为补测再次开机。
 
 ## 官方参考
 
