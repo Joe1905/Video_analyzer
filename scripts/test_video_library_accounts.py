@@ -60,6 +60,21 @@ class ManualAccountTests(unittest.TestCase):
         with workspace.database() as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM video_library_accounts').fetchone()[0], 0)
 
+    def test_public_video_lookup_uses_normalized_handle_without_pool_account(self):
+        account = self.add('https://www.tiktok.com/@Test.Creator')
+        response = {'data': {'aweme_list': [{'aweme_id': VID, 'desc': 'Public video',
+                    'author': {'unique_id': 'test.creator'}, 'video': {}, 'statistics': {'play_count': 3}}],
+                    'max_cursor': 'next', 'has_more': 1}}
+        with patch.object(workspace, 'client') as client:
+            client.return_value.get.return_value = response
+            job = {'id': 'test', 'owner': workspace._owner, 'product_id': account['product_id'],
+                   'video_id': '', 'action': 'refresh', 'status': 'running', 'done': 0, 'total': 0, 'failures': 0}
+            workspace.run_job(job)
+            self.assertEqual(job['status'], 'complete', job)
+            client.return_value.get.assert_called_once_with('/v1/scrape/tiktok/videos',
+                {'handle': 'test.creator', 'sort_by': 'latest'}, cache_policy='record_only')
+        self.assertEqual(workspace.item(account['product_id'], VID)['views'], 3)
+
     def test_late_link_unlink_and_relink_preserve_library_and_enforce_collection(self):
         account = self.add()
         pid = account['product_id']
