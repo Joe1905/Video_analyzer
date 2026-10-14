@@ -90,6 +90,8 @@ class ContractTests(unittest.TestCase):
     def test_malformed_json_and_missing_file(self):
         response = requests.post(self.url + "/v1/chat/completions", headers={**self.headers, "Content-Type": "application/json"}, data=b"{")
         self.assertEqual(response.status_code, 400)
+        response = requests.post(self.url + "/v1/audio/transcriptions", headers=self.headers, files={"other": ("test.wav", b"test")})
+        self.assertEqual(response.status_code, 400)
 
     def test_https_requires_and_accepts_service_certificate(self):
         self.server.socket = self.service.tls_context().wrap_socket(self.server.socket, server_side=True)
@@ -98,8 +100,6 @@ class ContractTests(unittest.TestCase):
             requests.get(url, timeout=5)
         response = requests.get(url, verify=str(self.service.directory / "server.crt"), timeout=5)
         self.assertEqual(response.status_code, 200)
-        response = requests.post(self.url + "/v1/audio/transcriptions", headers=self.headers, files={"other": ("test.wav", b"test")})
-        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":
