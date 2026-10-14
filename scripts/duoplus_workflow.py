@@ -264,6 +264,23 @@ def preview(workflow):
                      "官方 500 步和超长限时受本站步数、时间预算约束。"]}
 
 
+def normalize_recovery_coordinates(decision, encoded):
+    """Convert Tako's image-pixel target to the gateway's relative coordinate units."""
+    if not isinstance(decision, dict) or decision.get("recovery") != "tako":
+        return decision
+    if decision.get("coordinate_space") != "pixels" or decision.get("action") != "CLICK_COORDINATE":
+        raise ValueError("Tako 返回目标必须提供截图像素坐标。")
+    params, bounds = decision.get("params"), decision.get("target_bounds")
+    if not isinstance(params, dict) or not isinstance(bounds, list) or len(bounds) != 4:
+        raise ValueError("Tako 返回目标缺少坐标或可见按钮范围。")
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        width, height = image.size
+    params = {**params, "x": round(1000 * number(params.get("x"), 0, width) / width),
+              "y": round(1000 * number(params.get("y"), 0, height) / height)}
+    bounds = [1000 * number(value, 0, size) / size for value, size in zip(bounds, (width, height, width, height))]
+    return {**decision, "params": params, "target_bounds": bounds, "coordinate_space": "relative"}
+
+
 def validate_decision(decision):
     if not isinstance(decision, dict) or decision.get("status") not in {"action", "done", "blocked"}:
         raise ValueError("DeepSeek 必须返回 action、done 或 blocked 状态。")
@@ -273,6 +290,8 @@ def validate_decision(decision):
     if recovery is not None and (not isinstance(recovery, str) or recovery not in {"tako", "unexpected_panel"}
                                  or decision["status"] != "action"):
         raise ValueError("异常恢复必须是允许的单步动作。")
+    if decision.get("coordinate_space", "relative") != "relative":
+        raise ValueError("执行动作只能使用已换算的相对坐标。")
     if decision["status"] != "action":
         return decision
     action, params = decision.get("action"), decision.get("params")
@@ -371,8 +390,9 @@ def decide(task, screen, history, deadline, search_only=False):
         'When the CURRENT screenshot shows the TikTok Tako assistant page, ignore the normal goal for this step. '
         'Return status=action, recovery=tako and CLICK_COORDINATE on its clearly visible TOP-LEFT BACK ARROW, '
         'choosing the arrow CENTER and including its visible target_bounds, with wait_after=1000. '
-        'Convert screenshot pixels to relative units: x=1000*pixel_x/image_width and y=1000*pixel_y/image_height; '
-        'convert target_bounds the same way. Both x and y must be between 0 and 200. '
+        'SPECIAL COORDINATE RULE FOR TAKO RECOVERY ONLY: add coordinate_space="pixels" and report '
+        'x, y and target_bounds in ORIGINAL SCREENSHOT PIXELS. Do NOT scale or normalize them yourself. '
+        'The runner converts these pixel coordinates using the actual image dimensions. '
         'Never guess a fixed coordinate or use PAGE_BACK for Tako; if its arrow is not visible return blocked. '
         'The runner captures a fresh screenshot after the return; only then resume the original goal. '
         'For other unrelated recoverable TikTok panels obscuring the target, return recovery=unexpected_panel '
@@ -380,10 +400,11 @@ def decide(task, screen, history, deadline, search_only=False):
         'Do not use recovery to accept permissions, enable notifications, log in or bypass security challenges. '
         'Recovery is limited to three actions per AI node and shares its time/step budget. '
         'Do not back out of a profile when the goal requires following its creator. Never enter or send messages to Tako. '
-        'Coordinates are relative 0..1000, NOT screenshot pixels. Top left (0,0), bottom right (1000,1000). '
+        'For all actions EXCEPT recovery=tako, coordinates are relative 0..1000, NOT screenshot pixels. '
+        'Top left (0,0), bottom right (1000,1000). '
         'Input requires focusing the search/text field first. Use clear_first=true when replacing an existing query. '
         'For coordinate clicks, choose the target center and include top-level target_bounds=[left,top,right,bottom] '
-        'in relative 0..1000 units only when the clickable rectangle is clearly visible. '
+        'only when the clickable rectangle is clearly visible (pixels for Tako recovery, relative units otherwise). '
         'The runner may vary the click within the central target area; without bounds coordinates stay exact. '
         'Allowed action/parameter keys: ' + json.dumps({k: sorted(v) for k, v in PARAM_KEYS.items()}) + '. '
         'WAIT_TIME.wait_time and wait_after are milliseconds, at most 10000. '
@@ -422,7 +443,7 @@ def decide(task, screen, history, deadline, search_only=False):
     choice = result["choices"][0]
     if choice.get("finish_reason") != "stop":
         raise ValueError("DeepSeek 输出未完整结束。")
-    decision = validate_decision(json.loads(choice["message"]["content"]))
+    decision = validate_decision(normalize_recovery_coordinates(json.loads(choice["message"]["content"]), encoded))
     return decision, {"model": model, "usage": result.get("usage", {}),
                       "model_elapsed_seconds": round(time.monotonic() - started, 2)}
 

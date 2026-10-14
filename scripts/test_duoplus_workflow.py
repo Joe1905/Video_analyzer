@@ -171,6 +171,25 @@ class WorkflowTest(unittest.TestCase):
             runner.ai(self.search_node(), {"S-Content": "AI translator"})
         action.assert_not_called()
 
+    def test_tako_pixel_coordinates_are_converted_by_actual_image_dimensions(self):
+        source = io.BytesIO()
+        Image.new("RGB", (720, 1280), "white").save(source, format="PNG")
+        encoded = base64.b64encode(source.getvalue()).decode("ascii")
+        decision = {**self.decision("CLICK_COORDINATE", {"x": 48, "y": 100}),
+                    "recovery": "tako", "coordinate_space": "pixels", "target_bounds": [28, 84, 68, 118]}
+        response = SimpleNamespace(ok=True, json=lambda: {"choices": [{"finish_reason": "stop",
+                                   "message": {"content": json.dumps(decision)}}]})
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), patch("requests.Session.post", return_value=response):
+            normalized, _ = workflow.decide("goal", {"screenshot": encoded}, [], time.monotonic() + 10)
+        self.assertEqual(normalized["coordinate_space"], "relative")
+        self.assertEqual((normalized["params"]["x"], normalized["params"]["y"]), (67, 78))
+        self.assertAlmostEqual(normalized["target_bounds"][0], 1000 * 28 / 720)
+        self.assertEqual(decision["params"]["x"], 48)
+        with self.assertRaises(ValueError):
+            workflow.normalize_recovery_coordinates({**decision, "coordinate_space": "relative"}, encoded)
+        with self.assertRaises(ValueError):
+            workflow.normalize_recovery_coordinates({**decision, "params": {"x": 721, "y": 100}}, encoded)
+
     def test_search_mode_stops_before_interaction_loops(self):
         runner = self.runner()
         with patch.object(runner, "wait"), patch.object(runner, "observe"), patch.object(runner, "action"), \
