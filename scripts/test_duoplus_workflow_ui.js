@@ -8,11 +8,16 @@ async function main() {
   const html = fs.readFileSync(path.join(__dirname, 'static/duoplus.html'), 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const elements = {};
+  function element() {
+    return {value: '', files: [], disabled: false, hidden: false, children: [],
+      textContent: '', checked: false, attributes: {}, classList: {toggle() {}},
+      setAttribute(name, value) { this.attributes[name] = value; },
+      removeAttribute(name) { delete this.attributes[name]; }, focus() {}, click() {},
+      append(...children) { this.children.push(...children); }};
+  }
   for (const match of html.matchAll(/\bid="([^"]+)"/g)) {
     assert(!elements[match[1]], 'HTML IDs must be unique');
-    elements[match[1]] = {value: '', files: [], disabled: false, hidden: false,
-      textContent: '', checked: false, classList: {toggle() {}},
-      setAttribute() {}, removeAttribute() {}, focus() {}};
+    elements[match[1]] = element();
   }
   Object.assign(elements.workflowBudget, {value: '300'});
   Object.assign(elements.workflowSteps, {value: '16'});
@@ -23,9 +28,10 @@ async function main() {
   const requests = [];
   let runs = 0, failNextPoll = false;
   const polls = {}, cancelled = new Set();
-  const preview = {node_count: 37, search_available: true, model: 'offline-model'};
+  const preview = {node_count: 37, ai_nodes: [], search_available: true, model: 'offline-model'};
   const context = vm.createContext({
     document: {
+      createElement() { return element(); },
       getElementById(id) { assert(elements[id], 'Missing HTML control: ' + id); return elements[id]; },
       querySelectorAll(selector) { return selector === '[data-action]' ? [] : Object.values(elements); }
     },
@@ -76,6 +82,8 @@ async function main() {
   failNextPoll = true;
   await elements.workflowSearch.onclick();
   assert(!elements.workflowCancel.disabled, 'A lost status response must retain cancellation');
+  elements.workflowCardFull.onclick();
+  assert.equal(elements.workflowMode.value, 'search', 'A pending phone job must lock workflow selection');
   await elements.workflowCancel.onclick();
   const cancel = requests.find(item => item.url === '/api/duoplus/workflow/cancel');
   assert.equal(cancel.body.id, 'offline-job-2');
@@ -98,6 +106,38 @@ async function main() {
   assert(elements.status.textContent.includes('当前导入文件无效'));
   assert(!requests.some(item => item.url.includes('/phones') || item.url.endsWith('/screen') || item.url.endsWith('/run') && item.url !== '/api/duoplus/workflow/run'));
   console.log('PASS: invalid JSON cannot fall back to a different workflow');
+
+  elements.workflowCardFull.onclick();
+  assert.equal(elements.workflowMode.value, 'full');
+  assert.equal(elements.workflowSelectedName.textContent, '主题养号');
+  await elements.workflowSearch.onclick();
+  assert.equal(requests.filter(item => item.url === '/api/duoplus/workflow/run').at(-1).body.mode, 'full');
+  console.log('PASS: builtin cards choose the correct execution mode');
+
+  const importedA = {...template, fixture: 'A'}, importedB = {...template, fixture: 'B'};
+  elements.workflowFile.files = [
+    {name: '流程 A.json', size: 100, text: async () => JSON.stringify(importedA)},
+    {name: '流程 B.json', size: 100, text: async () => JSON.stringify(importedB)}
+  ];
+  const beforeImport = runs;
+  await elements.workflowFile.onchange();
+  assert.equal(runs, beforeImport, 'Import and selection must never operate the phone');
+  assert.equal(elements.workflowCards.children.length, 2);
+  assert.equal(elements.workflowSelectedName.textContent, '流程 A');
+  const secondCard = elements.workflowCards.children[1];
+  secondCard.onclick();
+  assert.equal(elements.workflowSelectedName.textContent, '流程 B');
+  assert.equal(secondCard.attributes['aria-pressed'], 'true');
+  await elements.workflowSearch.onclick();
+  const importedRun = requests.filter(item => item.url === '/api/duoplus/workflow/run').at(-1);
+  assert.equal(importedRun.body.workflow.fixture, 'B', 'Run must use the selected card payload');
+  assert.equal(importedRun.body.mode, 'full');
+  elements.workflowCardSearch.onclick();
+  await elements.workflowSearch.onclick();
+  const builtinRun = requests.filter(item => item.url === '/api/duoplus/workflow/run').at(-1);
+  assert.equal(builtinRun.body.workflow.fixture, undefined, 'Imported payload must not leak into builtin cards');
+  assert.equal(builtinRun.body.mode, 'search');
+  console.log('PASS: multiple imports route only the selected workflow and cannot leak into builtins');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
