@@ -607,6 +607,7 @@ def start(config, body, data_dir, schedule_job=None):
     # The shared phone lock remains held until the worker finishes, including cleanup.
     if not duoplus.LOCK.acquire(blocking=False):
         raise PhoneBusy("本站云手机操作正在执行，请等待完成。")
+    store = None
     try:
         directory = data_dir.parent / "output" / "duoplus_workflows" / job["id"]
         directory.mkdir(parents=True, exist_ok=False)
@@ -630,7 +631,12 @@ def start(config, body, data_dir, schedule_job=None):
         threading.Thread(target=runner.run, daemon=True, name="duoplus-workflow").start()
         return {"id": job["id"], "status": "queued", "budget_seconds": job["budget_seconds"]}
     except Exception:
-        duoplus.LOCK.release()
+        job.update(status="failed", finished_at=time.time(), error="工作流启动失败；未重复提交动作。")
+        try:
+            if store:
+                store.put_run(job)
+        finally:
+            duoplus.LOCK.release()
         raise
 
 

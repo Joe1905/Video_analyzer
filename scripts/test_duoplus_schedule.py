@@ -184,9 +184,9 @@ class ScheduleTest(unittest.TestCase):
             self.assertEqual(info["timezone"], "Europe/London")
             self.assertEqual(request.call_count, 1)
             self.assertEqual(request.call_args.args[1], "/api/v1/cloudPhone/command")
-        with patch.object(duoplus, "list_phones", return_value=[{"id": "phone-2", "status": 2}]), \
+        with patch.object(duoplus, "list_phones", return_value=[{"id": "phone-1", "status": 2}]), \
              patch.object(duoplus, "request") as request:
-            self.assertEqual(schedule.read_device_clock(self.data, "phone-2")["timezone"], "America/Los_Angeles")
+            self.assertEqual(schedule.read_device_clock(self.data, "phone-1")["timezone"], "America/Los_Angeles")
             request.assert_not_called()
         self.assertFalse(duoplus.LOCK.locked())
 

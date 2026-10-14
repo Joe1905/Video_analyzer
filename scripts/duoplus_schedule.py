@@ -319,15 +319,17 @@ def read_device_clock(data_dir, image_id):
     """Read only on explicit enable/refresh; never power on to determine time."""
     import duoplus
     store = Store(data_dir)
+    fallback = {"timezone": FALLBACK_ZONE, "clock_offset": 0, "clock_observed_at": None,
+                "clock_source": "fallback"}
     if not duoplus.LOCK.acquire(blocking=False):
-        return store.clock_info(image_id)
+        return fallback
     try:
         config = duoplus.load_config(data_dir)
         deadline = time.monotonic() + 20
         phone = next((p for p in duoplus.list_phones(config, image_id, deadline)
                       if p.get("id") == image_id), None)
         if not phone or str(phone.get("status")) != "1":
-            return store.clock_info(image_id)
+            return fallback
         response = duoplus.request(config, "/api/v1/cloudPhone/command",
                                    {"image_id": image_id, "command": "getprop persist.sys.timezone; date +%s"},
                                    deadline=deadline)
@@ -344,6 +346,6 @@ def read_device_clock(data_dir, image_id):
                        (image_id, zone, offset, observed))
         return store.clock_info(image_id)
     except Exception:
-        return store.clock_info(image_id)
+        return fallback
     finally:
         duoplus.LOCK.release()
