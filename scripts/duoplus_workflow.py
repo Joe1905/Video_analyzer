@@ -650,9 +650,9 @@ def handle(handler, parsed, data_dir, respond):
                 from duoplus_schedule import Store
                 result = Store(data_dir).run(job_id)
         elif handler.command == "GET" and path in {"workflow/schedules", "workflow/history"}:
-            from duoplus_schedule import Store
+            from duoplus_schedule import Store, scheduler_running
             store = Store(data_dir)
-            result = {"schedules": store.schedules()} if path.endswith("schedules") else {
+            result = {"schedules": store.schedules(), "scheduler_running": scheduler_running(data_dir)} if path.endswith("schedules") else {
                 "runs": store.history(parse_qs(parsed.query).get("card_key", ["legacy"])[0])}
         elif handler.command == "POST" and path in {"workflow/preview", "workflow/run", "workflow/cancel",
                                                    "workflow/schedule", "workflow/schedule/enable"}:

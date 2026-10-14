@@ -303,9 +303,16 @@ def start_scheduler(data_dir):
                     print("DuoPlus scheduler error: " + type(exc).__name__, flush=True)
                 time.sleep(2)
         thread = threading.Thread(target=loop, daemon=True, name="duoplus-scheduler")
+        scheduler.thread = thread
         _WORKERS[key] = scheduler
         thread.start()
         return scheduler
+
+
+def scheduler_running(data_dir):
+    with _WORKER_LOCK:
+        scheduler = _WORKERS.get(str(Path(data_dir).resolve()))
+        return bool(scheduler and scheduler.thread.is_alive())
 
 
 def read_device_clock(data_dir, image_id):
