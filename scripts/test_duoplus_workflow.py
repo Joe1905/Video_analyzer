@@ -39,6 +39,7 @@ class WorkflowTest(unittest.TestCase):
         workflow.JOBS[job["id"]] = job
         runner = workflow.Runner(job, {"api_key": "test-key"}, workflow.compile_workflow(self.original),
                                  ["AI translator"], threading.Event(), Path(self.directory.name))
+        runner.phone = {"id": "phone-1"}
         runner.screen = {"current_app": workflow.PACKAGE, "screenshot": "iVBORw0KGgo="}
         return runner
 
@@ -199,6 +200,7 @@ class WorkflowTest(unittest.TestCase):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}):
             for body in ({"topics": "one\ntwo"}, {"topics": "AI translator", "budget_seconds": 421},
                          {"topics": "AI translator", "ai_max_steps": 0},
+                         {"topics": "AI translator", "workflow": {}},
                          {"topics": "AI translator", "auto_power_off": "true"}):
                 with self.subTest(body=body), self.assertRaises(ValueError):
                     workflow.start({"image_id": "phone-1"}, body, Path(self.directory.name))
