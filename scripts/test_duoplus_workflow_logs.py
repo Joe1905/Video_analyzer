@@ -113,6 +113,13 @@ class WorkflowLogsTest(unittest.TestCase):
         self.assertEqual(platform.call_count, 2)
         self.assertFalse(duoplus.LOCK.locked())
         self.assertTrue((runner.directory / "result.json").is_file())
+        replies = []
+        handler = SimpleNamespace(command="GET")
+        workflow.handle(handler, urlparse("/api/duoplus/workflow/logs?id=" + self.run_id), self.data,
+                        lambda _, status, body: replies.append((status, body)))
+        self.assertEqual(replies[0][1]["run"]["status"], "cancelled")
+        self.assertFalse(replies[0][1]["durable"])
+        self.assertIn("log_error", replies[0][1]["run"])
 
     def test_log_api_is_read_only_when_phone_locked_and_rejects_bad_cursor(self):
         self.store.append_event(self.run_id, {"kind": "node"})

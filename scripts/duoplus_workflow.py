@@ -870,8 +870,20 @@ def handle(handler, parsed, data_dir, respond):
         elif handler.command == "GET" and path == "workflow/logs":
             from duoplus_schedule import Store
             query = parse_qs(parsed.query)
-            result = Store(data_dir).events(query.get("id", [""])[0], query.get("after", [0])[0],
-                                            query.get("limit", [100])[0])
+            job_id = query.get("id", [""])[0]
+            after, limit = integer(query.get("after", [0])[0], 0, 2_147_483_647), integer(query.get("limit", [100])[0], 1, 200)
+            with STATE_LOCK:
+                live = JOBS.get(job_id)
+                fallback = copy.deepcopy({key: value for key, value in live.items() if key != "screen"}) if live and live.get("log_error") else None
+            if fallback:
+                events = [entry for entry in fallback["logs"] if entry["seq"] > after]
+                page = events[:limit]
+                result = {"run": {key: value for key, value in fallback.items() if key not in {
+                    "logs", "started_monotonic", "evidence_directory"}}, "events": page, "durable": False,
+                    "next_cursor": page[-1]["seq"] if page else after, "has_more": len(events) > limit,
+                    "last_sequence": fallback["log_sequence"], "terminal": fallback["status"] not in {"queued", "running"}}
+            else:
+                result = {**Store(data_dir).events(job_id, after, limit), "durable": True}
         elif handler.command == "GET" and path == "workflow/evidence":
             query = parse_qs(parsed.query)
             job_id, filename = query.get("id", [""])[0], query.get("file", [""])[0]
