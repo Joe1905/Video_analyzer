@@ -147,11 +147,21 @@ class WorkflowTest(unittest.TestCase):
     def test_coordinate_conversion_uses_physical_template_size(self):
         runner = self.runner(mode="full")
         node = next(node for node in workflow.flatten(runner.graph) if node["data"]["action"] == "CLICK_COORDINATE")
+        node = {**node, "id": "coordinate-conversion-check"}
         with patch.object(runner, "wait"), patch.object(runner, "action") as action, \
                 patch.object(workflow.random, "uniform", return_value=0):
             runner.graph_run([node], {})
             self.assertEqual(action.call_args.args[1]["x"], 859)
             self.assertEqual(action.call_args.args[1]["y"], 344)
+
+    def test_obsolete_tako_coordinate_is_skipped_without_phone_action(self):
+        runner = self.runner(mode="full")
+        node = next(node for node in workflow.flatten(runner.graph) if node["id"] == workflow.LEGACY_TAP_NODE_ID)
+        with patch.object(runner, "action") as action, patch.object(runner, "wait"):
+            runner.graph_run([node], {})
+        action.assert_not_called()
+        self.assertEqual(runner.job["logs"][-1]["kind"], "skip")
+        self.assertIn("Tako", runner.job["logs"][-1]["message"])
 
     def test_ai_randomness_keeps_click_target_and_exact_text(self):
         click = self.decision("CLICK_COORDINATE", {"x": 500, "y": 500, "wait_after": 1000})
