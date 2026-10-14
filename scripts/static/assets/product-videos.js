@@ -57,7 +57,7 @@ function renderProducts() {
   const q=$("productFilter").value.trim().toLowerCase();
   const products=state.products.filter(p=>(p.product_name+" "+p.product_id+" "+(p.handle||"")).toLowerCase().includes(q));
   $("productCount").textContent=state.products.length;
-$("products").innerHTML=products.map(p=>`<button class="product-row ${p.product_id===state.selected?"active":""}" data-product="${esc(p.product_id)}" aria-pressed="${p.product_id===state.selected}"><span class="product-thumb">${image(p)}</span><span class="product-row-copy"><strong>${esc(p.product_name)}</strong><span class="row-meta"><span>${esc(p.price||"价格未知")}</span><span>${esc(p.status||"状态未知")}</span></span><span class="row-id">${esc(p.handle?(p.feishu_user_name||"未绑定飞书"):p.product_id)}</span></span></button>`).join("")||`<div class="empty small">${state.products.length?"没有匹配的结果":state.mode==="accounts"?"IP 池暂无 TikTok 账号，请到 IP 池添加":"商品库还是空的，点击 ＋ 添加商品"}</div>`;
+$("products").innerHTML=products.map(p=>`<button class="product-row ${p.product_id===state.selected?"active":""}" data-product="${esc(p.product_id)}" aria-pressed="${p.product_id===state.selected}"><span class="product-thumb">${image(p)}</span><span class="product-row-copy"><strong>${esc(p.product_name)}</strong><span class="row-meta"><span>${esc(p.price||"价格未知")}</span><span>${esc(p.status||"状态未知")}</span></span><span class="row-id">${esc(p.handle?(p.pool_linked?(p.feishu_user_name||"已关联账号池 · 未绑定飞书"):"未关联账号池 · 采集禁用"):p.product_id)}</span></span></button>`).join("")||`<div class="empty small">${state.products.length?"没有匹配的结果":state.mode==="accounts"?"暂无 TikTok 账号，点击 ＋ 手动添加":"商品库还是空的，点击 ＋ 添加商品"}</div>`;
 }
 async function loadProducts(preferred=state.selected) {
   const token=++state.librarySeq;const result=await api(state.mode==="accounts"?endpoint("accounts"):"/api/proxy/products");if(token!==state.librarySeq)return;state.products=result.products||[];renderProducts();
@@ -71,9 +71,10 @@ async function switchLibrary(mode) {
   const account=mode==="accounts";
   $("videoSort").value=account?"published_at":"views";
   $("productsTab").setAttribute("aria-pressed",String(!account));$("accountsTab").setAttribute("aria-pressed",String(account));
-  $("libraryTitle").textContent=account?"账号池":"商品库";$("addProduct").hidden=account;
+  $("libraryTitle").textContent=account?"账号池":"商品库";$("addProduct").hidden=false;
+  $("addProduct").setAttribute("aria-label",account?"手动添加账号":"添加商品");$("addProduct").title=account?"手动添加账号":"添加商品";
   $("productFilter").value="";$("productFilter").placeholder=account?"搜索账号名称或 @账号":"搜索商品名称或 ID";$("productFilter").setAttribute("aria-label",account?"搜索账号池":"搜索商品库");
-  $("libraryMeta").textContent=account?"复用 IP 池账号 · 切换不扣额度":"与视频发布共用商品库";$("libraryFoot").textContent=account?"账号维护请前往 IP 池":"主图本地缓存 · 无需重复远程加载";
+  $("libraryMeta").textContent=account?"账号池 + 手动添加 · 切换不扣额度":"与视频发布共用商品库";$("libraryFoot").textContent=account?"同用户名自动关联账号池 · 登录 / IP 在 IP 池维护":"主图本地缓存 · 无需重复远程加载";
   $("productWorkspace").hidden=true;$("workspaceEmpty").hidden=false;renderProducts();await loadProducts();
 }
 function renderOverview() {
@@ -81,7 +82,7 @@ function renderOverview() {
   $("workspaceEmpty").hidden=true;$("productWorkspace").hidden=false;
   $("selectedName").textContent=p.product_name;
   $("selectedImage").innerHTML=image(p,null,false);
-  $("selectedMeta").textContent=p.handle?`@${p.handle} · 来自 IP 池`:`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
+  $("selectedMeta").textContent=p.handle?`@${p.handle} · ${p.pool_linked?"已关联账号池":"未关联账号池 · 采集留存禁用"}`:`ID ${p.product_id} · ${p.price||"价格未知"} · 库存 ${p.stock||"未知"}`;
   $("editProduct").hidden=Boolean(p.handle);$("deleteProduct").hidden=Boolean(p.handle);$("shopLink").textContent=p.handle?"账号主页 ↗":"商品主页 ↗";
   $("sourceEyebrow").textContent=p.handle?"ACCOUNT VIDEO LIBRARY":"PRODUCT VIDEO LIBRARY";
   $("summaryNote").innerHTML=p.handle?"查询最新一页<br><span>历史视频手动加载，已有数据持续保留。</span>":"发现关联内容，持续更新表现。<br><span>接口返回部分关联视频，不代表全量。</span>";
@@ -91,6 +92,19 @@ async function selectProduct(pid) {
   state.checked.clear();
   clearTimeout(state.timer);state.seq++;state.selected=pid;state.page=1;state.videos=[];state.job=null;state.hasMore=false;state.loading=true;
   $("videoFilter").value="";renderProducts();renderOverview();renderVideos();await loadVideos();
+}
+function openAccountEditor() {
+  $("accountForm").reset();inlineError("accountEditorError");$("accountEditor").showModal();$("accountHandle").focus();
+}
+async function saveAccount(event) {
+  event.preventDefault();if($("saveAccount").disabled)return;
+  $("saveAccount").disabled=true;inlineError("accountEditorError");
+  try {
+    const result=await api('/api/product-videos/accounts',{handle:$("accountHandle").value.trim()});
+    $("accountEditor").close();await loadProducts(result.account.product_id);
+    toast(result.account.pool_linked?"账号已关联账号池":"账号已添加，未关联账号池，采集留存暂不可用");
+  } catch(error) {inlineError("accountEditorError",error.message);}
+  finally {$("saveAccount").disabled=false;}
 }
 async function loadVideos() {
   const pid=state.selected, seq=state.seq;if(!pid)return;
@@ -112,6 +126,7 @@ async function loadVideos() {
     const result=await api(endpoint("list",pid));if(seq!==state.seq)return;
     const keepCards=!state.loading && ['play','download','audio','review'].includes(result.job?.action) && ['running','queued'].includes(result.job?.status);
     state.videos=result.videos;state.job=result.job;state.hasMore=Boolean(result.has_more);state.loading=false;
+    const selected=current();if(selected&&result.product){Object.assign(selected,result.product);renderOverview();renderProducts();}
     if(keepCards){renderJobStatus();updateVideoStatuses();}else renderVideos();
     if(state.media && $("mediaDialog").open)await renderMedia();
   } catch(e) {if(seq===state.seq){const initial=state.loading;state.loading=false;if(initial)renderVideos();toast(e.message,true);}}
@@ -507,10 +522,11 @@ document.addEventListener("click",event=>{
     if(target.dataset.refresh)return startJob("refresh",target.dataset.refresh);
     if(target.hasAttribute("data-refresh-all"))return startJob();
     if(target.dataset.import!=null){fillForm(state.imports[Number(target.dataset.import)]);$("productForm").elements.product_name.focus();return;}
-    switch(target.id){case "loadMore":return startJob("more");case "addProduct":return openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
+    switch(target.id){case "loadMore":return startJob("more");case "addProduct":return state.mode==="accounts"?openAccountEditor():openEditor();case "editProduct":return openEditor(true);case "reloadProducts":return loadProducts();case "refreshAll":return startJob();case "searchImport":return searchImport();case "deleteProduct":return openDelete();case "confirmDelete":return deleteProduct();case "playVideo":state.playRequested=state.media.video_id;return startJob("play",state.media.video_id);case "extractAudio":return startJob("audio",state.media.video_id);}
   };run().catch(e=>toast(e.message,true));
 });
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",()=>{state.page=1;renderVideos();});$("videoSort").addEventListener("change",()=>{state.page=1;renderVideos();});$("productForm").addEventListener("submit",saveProduct);
+$("accountForm").addEventListener("submit",saveAccount);
 $("importQuery").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();searchImport();}});
 $("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;});
 $("videos").addEventListener("change",event=>{const id=event.target.dataset.selectVideo;if(id){if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderSelection();}});
