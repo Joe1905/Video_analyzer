@@ -1,0 +1,18 @@
+# Start only this service with -f docker-compose.yml -f docker-compose.llm.yml.
+services:
+  llm:
+    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
+    command: python scripts/llm_service.py
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LLM_BIND_HOST: ${LLM_BIND_HOST:-192.168.1.254}
+      LLM_PORT: ${LLM_PORT:-4010}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_API_URL: ${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      XDG_CACHE_HOME: /workspace/data/model_cache
+      OMP_NUM_THREADS: "4"
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ${DATA_DIR:-./data}:/workspace/data
