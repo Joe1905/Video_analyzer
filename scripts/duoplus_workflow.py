@@ -119,6 +119,18 @@ def swipe_command(params):
     return "input touchscreen swipe " + " ".join(map(str, values))
 
 
+def confirm_shutdown(config, image_id, deadline):
+    status = None
+    while time.monotonic() < deadline:
+        phone = next((row for row in duoplus.list_phones(config, image_id, deadline)
+                      if row.get("id") == image_id), {})
+        status = phone.get("status")
+        if str(status) == "2":
+            return True, status
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    return False, status
+
+
 def compile_workflow(workflow):
     """Validate every nested graph and parameter before allowing a cloud request."""
     if not isinstance(workflow, dict) or not isinstance(workflow.get("config", []), list):
@@ -714,20 +726,30 @@ class Runner:
         finally:
             self.job["stage"] = "cleanup"
             if self.job["auto_power_off"]:
+                cleanup_deadline = time.monotonic() + 20
                 try:
                     self.log("power", message="提交任务结束后的关机请求。")
                     result = duoplus.request(self.config, "/api/v1/cloudPhone/powerOff",
-                                            {"image_ids": [self.job["image_id"]]}, deadline=time.monotonic() + 20)
+                                            {"image_ids": [self.job["image_id"]]}, deadline=cleanup_deadline)
                     if self.job["image_id"] not in result.get("data", {}).get("success", []):
                         raise ValueError("关机请求未被接受。")
-                    self.log("power", message="关机请求已接受；平台异步关机，需确认最终状态。")
                     self.job["power_off_requested"] = True
+                    self.log("power", message="关机请求已接受，确认最终设备状态。")
                 except Exception:
                     self.log("power", message="自动关机未确认成功，请在 DuoPlus 控制台检查以停止计费。")
                     self.job["power_off_requested"] = False
+                if self.job["power_off_requested"]:
+                    try:
+                        confirmed, phone_status = confirm_shutdown(self.config, self.job["image_id"], cleanup_deadline)
+                        self.job.update(power_off_confirmed=confirmed, final_phone_status=phone_status)
+                    except Exception as exc:
+                        self.job.update(power_off_confirmed=False, power_off_check_error=type(exc).__name__)
+                    self.log("power", message="已确认设备关机。" if self.job["power_off_confirmed"] else "关机最终状态未确认，请检查设备。")
             with STATE_LOCK:
                 self.job.update(status=status, error=error, finished_at=time.time(),
                                 stage="finished", active_action=None,
+                                needs_attention=bool(self.job.get("log_error") or self.job["auto_power_off"] and (
+                                    not self.job.get("power_off_requested") or self.job.get("power_off_confirmed") is False)),
                                 elapsed_seconds=round(time.monotonic() - self.job["started_monotonic"], 2))
             self.log("finish", message={"complete": "运行完成。", "failed": "运行失败。", "cancelled": "运行已停止。"}[status])
             try:

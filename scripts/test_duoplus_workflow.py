@@ -332,12 +332,23 @@ class WorkflowTest(unittest.TestCase):
         runner.event.set()
         duoplus.LOCK.acquire()
         with patch.object(duoplus, "get_phone", side_effect=ValueError("cancelled")), \
+                patch.object(duoplus, "list_phones", return_value=[{"id": "phone-1", "status": 2}]), \
                 patch.object(duoplus, "request", return_value={"data": {"success": ["phone-1"]}}) as request:
             runner.run()
         self.assertEqual(runner.job["status"], "cancelled")
         self.assertTrue(runner.job["power_off_requested"])
+        self.assertTrue(runner.job["power_off_confirmed"])
         self.assertEqual(request.call_count, 1)
         self.assertEqual(request.call_args.args[1], "/api/v1/cloudPhone/powerOff")
+
+    def test_shutdown_confirmation_polls_only_and_respects_deadline(self):
+        with patch.object(duoplus, "list_phones", side_effect=[[{"id": "phone-1", "status": 11}],
+                         [{"id": "phone-1", "status": 2}]]) as listing, patch.object(workflow.time, "sleep"):
+            self.assertEqual(workflow.confirm_shutdown({}, "phone-1", time.monotonic() + 20), (True, 2))
+        self.assertEqual(listing.call_count, 2)
+        with patch.object(duoplus, "list_phones") as listing:
+            self.assertEqual(workflow.confirm_shutdown({}, "phone-1", time.monotonic() - 1), (False, None))
+        listing.assert_not_called()
 
     def test_preview_and_job_routes_never_call_cloud_even_when_busy(self):
         handler = SimpleNamespace(command="GET", client_address=("127.0.0.1", 1234),

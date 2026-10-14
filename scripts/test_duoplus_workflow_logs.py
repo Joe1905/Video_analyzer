@@ -81,6 +81,7 @@ class WorkflowLogsTest(unittest.TestCase):
                 "data": {"success": ["phone-1"]}}
         duoplus.LOCK.acquire()
         with patch.object(duoplus, "get_phone", return_value={"id": "phone-1"}), \
+                patch.object(duoplus, "list_phones", return_value=[{"id": "phone-1", "status": 2}]), \
                 patch.object(duoplus, "request", side_effect=request) as platform, \
                 patch.object(duoplus, "submit", side_effect=workflow.requests.Timeout()), \
                 patch.object(runner, "graph_run", side_effect=lambda *args: runner.action("PAGE_BACK", {})):
@@ -100,6 +101,7 @@ class WorkflowLogsTest(unittest.TestCase):
         runner = self.runner(store=broken)
         duoplus.LOCK.acquire()
         with patch.object(duoplus, "get_phone", return_value={"id": "phone-1"}), \
+                patch.object(duoplus, "list_phones", return_value=[{"id": "phone-1", "status": 2}]), \
                 patch.object(duoplus, "request", side_effect=[
                     {"data": {"success": True, "content": "Physical size: 1080x1920"}},
                     {"data": {"success": ["phone-1"]}}]) as platform, \
