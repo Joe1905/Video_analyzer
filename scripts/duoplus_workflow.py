@@ -259,7 +259,7 @@ def preview(workflow):
         "search_available": any(node["id"] == SEARCH_NODE_ID and node["data"]["action"] == "AI_OPERATION" for node in nodes),
         "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash-vision-exp"),
         "warnings": ["固定像素坐标按模板基准 1080×1920 转换；设备物理尺寸不符会停止。",
-                     "点击/滑动/停顿加入受限随机变化；滑动时长由受限 input swipe 命令控制，尚待真机验证。",
+                     "点击/滑动/停顿加入受限随机变化；滑动时长由受限 input swipe 命令控制。",
                      "动作结果不确定时停止；不会沿用官方 exception_type=2 的跳过规则。",
                      "官方 500 步和超长限时受本站步数、时间预算约束。"]}
 
