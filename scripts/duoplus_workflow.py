@@ -308,16 +308,23 @@ class SearchComplete(Exception):
     pass
 
 
+class PhoneBusy(ValueError):
+    pass
+
+
 class Runner:
-    def __init__(self, job, config, graph, topics, event, directory):
+    def __init__(self, job, config, graph, topics, event, directory, store=None):
         self.job, self.config, self.graph = job, config, graph
         self.topics, self.event, self.directory = topics, event, directory
         self.deadline = time.monotonic() + job["budget_seconds"]
+        if job.get("window_end"):
+            self.deadline = min(self.deadline, time.monotonic() + max(0, job["window_end"] - time.time()))
         self.phone, self.screen, self.visits, self.shot_count = None, {}, 0, 0
+        self.store = store
 
     def check(self):
         if self.event.is_set():
-            raise ValueError("用户已停止工作流。")
+            raise ValueError(self.job.get("cancel_reason", "用户已停止工作流。"))
         if time.monotonic() >= self.deadline:
             raise ValueError("工作流已达到时间上限。")
 
@@ -325,6 +332,29 @@ class Runner:
         with STATE_LOCK:
             self.job["logs"].append({"kind": kind, "elapsed_seconds": round(time.monotonic() - self.job["started_monotonic"], 2), **details})
             self.job["logs"] = self.job["logs"][-500:]
+            if self.store:
+                self.store.put_run(self.job)
+
+    def prepare_phone(self):
+        self.check()
+        if self.job.get("auto_power_on"):
+            rows = duoplus.list_phones(self.config, self.job["image_id"], self.deadline)
+            phone = next((row for row in rows if row.get("id") == self.job["image_id"]), None)
+            if not phone:
+                raise ValueError("未找到定时计划指定的云手机。")
+            if str(phone.get("status")) == "2":
+                self.log("power", message="到点提交一次开机请求；按平台计费。")
+                result = duoplus.request(self.config, "/api/v1/cloudPhone/powerOn",
+                                        {"image_ids": [self.job["image_id"]]}, deadline=self.deadline)
+                if self.job["image_id"] not in result.get("data", {}).get("success", []):
+                    raise ValueError("开机请求未被接受；没有重复提交。")
+                phone["status"] = 10
+            while str(phone.get("status")) == "10":
+                self.wait(2000)
+                phone = next((row for row in duoplus.list_phones(
+                    self.config, self.job["image_id"], self.deadline) if row.get("id") == self.job["image_id"]), {})
+            self.check()
+        return duoplus.get_phone(self.config, self.job["image_id"], self.deadline)
 
     def wait(self, milliseconds):
         self.check()
@@ -477,7 +507,9 @@ class Runner:
         try:
             with STATE_LOCK:
                 self.job["status"] = "running"
-            self.phone = duoplus.get_phone(self.config, self.job["image_id"], self.deadline)
+            if self.store:
+                self.store.put_run(self.job)
+            self.phone = self.prepare_phone()
             size = duoplus.request(self.config, "/api/v1/cloudPhone/command",
                                    {"image_id": self.phone["id"], "command": "wm size"}, deadline=self.deadline)
             if size.get("data", {}).get("success") is not True:
@@ -514,8 +546,11 @@ class Runner:
                     self.log("power", message="自动关机未确认成功，请在 DuoPlus 控制台检查以停止计费。")
                     self.job["power_off_requested"] = False
             with STATE_LOCK:
-                self.job.update(status=status, error=error, elapsed_seconds=round(time.monotonic() - self.job["started_monotonic"], 2))
+                self.job.update(status=status, error=error, finished_at=time.time(),
+                                elapsed_seconds=round(time.monotonic() - self.job["started_monotonic"], 2))
             try:
+                if self.store:
+                    self.store.put_run(self.job)
                 (self.directory / "result.json").write_text(json.dumps(snapshot(self.job["id"]), ensure_ascii=False, indent=2), encoding="utf-8")
             finally:
                 duoplus.LOCK.release()
@@ -528,7 +563,7 @@ def snapshot(job_id):
         return copy.deepcopy({k: v for k, v in JOBS[job_id].items() if k != "started_monotonic"})
 
 
-def start(config, body, data_dir):
+def prepare(body, default_image_id="", require_key=False):
     workflow = template() if body.get("workflow") is None else body["workflow"]
     graph = compile_workflow(workflow)
     mode = body.get("mode", "search")
@@ -542,25 +577,39 @@ def start(config, body, data_dir):
         raise ValueError("请输入 1–10 个主题，每行一个，单主题最多 200 字。")
     if mode == "search" and (len(topics) != 1 or not preview(workflow)["search_available"]):
         raise ValueError("仅搜索模式需要一个主题及本官方模板的搜索 AI 节点。")
-    if not os.getenv("DEEPSEEK_API_KEY"):
+    if require_key and not os.getenv("DEEPSEEK_API_KEY"):
         raise ValueError("服务器未配置 DEEPSEEK_API_KEY。")
-    image_id = body.get("image_id", config["image_id"])
+    image_id = body.get("image_id", default_image_id)
     if not isinstance(image_id, str) or not image_id.strip() or len(image_id) > 100:
         raise ValueError("请选择云手机。")
     if type(body.get("auto_power_off", True)) is not bool:
         raise ValueError("自动关机选项无效。")
+    if type(body.get("auto_power_on", False)) is not bool:
+        raise ValueError("自动开机选项无效。")
+    card_key, name = body.get("card_key", "legacy"), body.get("name", "工作流")
+    if any(not isinstance(value, str) or not value.strip() or len(value) > 100 for value in (card_key, name)):
+        raise ValueError("工作流标识或名称无效（最多 100 字）。")
     job = {"id": uuid.uuid4().hex, "status": "queued", "mode": mode, "topics": topics,
            "image_id": image_id.strip(), "budget_seconds": integer(body.get("budget_seconds", 300), 30, 420),
            "ai_max_steps": integer(body.get("ai_max_steps", 16), 1, 24),
-           "auto_power_off": body.get("auto_power_off", True), "logs": [], "screen": {}, "error": "",
+           "auto_power_off": body.get("auto_power_off", True), "auto_power_on": body.get("auto_power_on", False),
+           "card_key": card_key, "name": name, "started_at": time.time(), "logs": [], "screen": {}, "error": "",
            "started_monotonic": time.monotonic(), "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash-vision-exp")}
+    return workflow, graph, job
+
+
+def start(config, body, data_dir, schedule_job=None):
+    from duoplus_schedule import Store
+    source, graph, job = prepare(body, config.get("image_id", ""), require_key=True)
+    if schedule_job:
+        job.update({key: schedule_job[key] for key in ("id", "schedule_id", "window_end", "started_at")})
     # The shared phone lock remains held until the worker finishes, including cleanup.
     if not duoplus.LOCK.acquire(blocking=False):
-        raise ValueError("本站云手机操作正在执行，请等待完成。")
+        raise PhoneBusy("本站云手机操作正在执行，请等待完成。")
     try:
         directory = data_dir.parent / "output" / "duoplus_workflows" / job["id"]
         directory.mkdir(parents=True, exist_ok=False)
-        (directory / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False), encoding="utf-8")
+        (directory / "workflow.json").write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
         job["evidence_directory"] = str(directory)
         event = threading.Event()
         with STATE_LOCK:
@@ -571,7 +620,9 @@ def start(config, body, data_dir):
                     JOBS.pop(old_id)
                     EVENTS.pop(old_id)
             JOBS[job["id"]], EVENTS[job["id"]] = job, event
-        runner = Runner(job, config, graph, topics, event, directory)
+        store = Store(data_dir)
+        store.put_run(job)
+        runner = Runner(job, config, graph, job["topics"], event, directory, store=store)
         threading.Thread(target=runner.run, daemon=True, name="duoplus-workflow").start()
         return {"id": job["id"], "status": "queued", "budget_seconds": job["budget_seconds"]}
     except Exception:
@@ -586,8 +637,21 @@ def handle(handler, parsed, data_dir, respond):
             workflow = template()
             result = {"workflow": workflow, "preview": preview(workflow)}
         elif handler.command == "GET" and path == "workflow/job":
-            result = snapshot(parse_qs(parsed.query).get("id", [""])[0])
-        elif handler.command == "POST" and path in {"workflow/preview", "workflow/run", "workflow/cancel"}:
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            with STATE_LOCK:
+                live = job_id in JOBS
+            if live:
+                result = snapshot(job_id)
+            else:
+                from duoplus_schedule import Store
+                result = Store(data_dir).run(job_id)
+        elif handler.command == "GET" and path in {"workflow/schedules", "workflow/history"}:
+            from duoplus_schedule import Store
+            store = Store(data_dir)
+            result = {"schedules": store.schedules()} if path.endswith("schedules") else {
+                "runs": store.history(parse_qs(parsed.query).get("card_key", ["legacy"])[0])}
+        elif handler.command == "POST" and path in {"workflow/preview", "workflow/run", "workflow/cancel",
+                                                   "workflow/schedule", "workflow/schedule/enable"}:
             length = int(handler.headers.get("Content-Length", 0))
             if not 0 < length <= 131072 or handler.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 raise ValueError("工作流请求必须为不超过 128KB 的 JSON。")
@@ -596,6 +660,19 @@ def handle(handler, parsed, data_dir, respond):
                 raise ValueError("请求必须为 JSON 对象。")
             if path == "workflow/preview":
                 result = preview(template() if body.get("workflow") is None else body["workflow"])
+            elif path in {"workflow/schedule", "workflow/schedule/enable"}:
+                from duoplus_schedule import Store
+                store = Store(data_dir)
+                if path == "workflow/schedule":
+                    result = store.save(body)
+                else:
+                    clock = None
+                    if body.get("enabled") is True:
+                        from duoplus_schedule import read_device_clock
+                        plan = store.schedule(body.get("id", ""))
+                        if not plan["active_run_id"]:
+                            clock = read_device_clock(data_dir, plan["payload"]["image_id"])
+                    result = store.enable(body.get("id", ""), body.get("enabled"), clock_info=clock)
             elif path == "workflow/cancel":
                 job_id = body.get("id", "")
                 with STATE_LOCK:

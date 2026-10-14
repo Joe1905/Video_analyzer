@@ -9,11 +9,12 @@ async function main() {
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const elements = {};
   function element() {
-    return {value: '', files: [], disabled: false, hidden: false, children: [],
+    return {value: '', files: [], disabled: false, hidden: false, children: [], dataset: {},
       textContent: '', checked: false, attributes: {}, classList: {toggle() {}},
       setAttribute(name, value) { this.attributes[name] = value; },
       removeAttribute(name) { delete this.attributes[name]; }, focus() {}, click() {},
-      append(...children) { this.children.push(...children); }};
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; }};
   }
   for (const match of html.matchAll(/\bid="([^"]+)"/g)) {
     assert(!elements[match[1]], 'HTML IDs must be unique');
@@ -27,6 +28,7 @@ async function main() {
   const template = JSON.parse(fs.readFileSync(path.join(__dirname, 'workflows/duoplus_tiktok_topic.json'), 'utf8'));
   const requests = [];
   let runs = 0, failNextPoll = false;
+  let savedPlan = null;
   const polls = {}, cancelled = new Set();
   const preview = {node_count: 37, ai_nodes: [], search_available: true, model: 'offline-model'};
   const context = vm.createContext({
@@ -36,12 +38,25 @@ async function main() {
       querySelectorAll(selector) { return selector === '[data-action]' ? [] : Object.values(elements); }
     },
     setTimeout(callback) { callback(); },
+    setInterval() {},
     fetch: async (url, options = {}) => {
       const body = options.body ? JSON.parse(options.body) : null;
       requests.push({url, body});
       let data;
       if (url === '/api/duoplus/config') {
         data = {configured: false, image_id: 'offline-phone', region: 'cn'};
+      } else if (url === '/api/duoplus/workflow/schedules') {
+        data = {schedules: savedPlan ? [savedPlan] : []};
+      } else if (url.startsWith('/api/duoplus/workflow/history?')) {
+        data = {runs: []};
+      } else if (url === '/api/duoplus/workflow/schedule') {
+        savedPlan = {id: 'offline-schedule', ...body, card_key: body.payload.card_key,
+          name: body.payload.name, timezone: 'America/Los_Angeles', clock_offset: 0,
+          clock_source: 'fallback', enabled: false, status: 'paused', next_run_at: null};
+        data = savedPlan;
+      } else if (url === '/api/duoplus/workflow/schedule/enable') {
+        savedPlan = {...savedPlan, enabled: body.enabled, status: body.enabled ? 'waiting' : 'paused'};
+        data = savedPlan;
       } else if (url === '/api/duoplus/workflow') {
         data = {workflow: template, preview};
       } else if (url === '/api/duoplus/workflow/preview') {
@@ -65,7 +80,7 @@ async function main() {
     }
   });
   await vm.runInContext(script, context);
-  assert.equal(requests.length, 1); // Startup only uses the fake config.
+  assert.equal(requests.length, 3); // Config, saved cards and history use only fake APIs.
   assert.equal(elements.configView.hidden, false);
   assert(elements.configStatus.textContent.includes('请先配置'));
 
@@ -138,6 +153,32 @@ async function main() {
   assert.equal(builtinRun.body.workflow.fixture, undefined, 'Imported payload must not leak into builtin cards');
   assert.equal(builtinRun.body.mode, 'search');
   console.log('PASS: multiple imports route only the selected workflow and cannot leak into builtins');
+
+  elements.scheduleStartDate.value = '2099-01-01';
+  elements.scheduleEndDate.value = '2099-01-03';
+  elements.scheduleStartTime.value = '09:00';
+  elements.scheduleEndTime.value = '18:00';
+  elements.scheduleRepeat.checked = true;
+  elements.scheduleInterval.value = '30';
+  elements.schedulePowerOn.checked = true;
+  const beforeSchedule = runs;
+  await elements.scheduleSave.onclick();
+  const saved = requests.find(item => item.url === '/api/duoplus/workflow/schedule').body;
+  assert.equal(saved.start_date, '2099-01-01');
+  assert.equal(saved.end_date, '2099-01-03');
+  assert.equal(saved.interval_seconds, 1800);
+  assert.equal(saved.repeat, true);
+  assert.equal(saved.payload.card_key, 'builtin-search');
+  assert.equal(saved.payload.auto_power_on, true);
+  assert.equal(savedPlan.enabled, false, 'Saving must pause instead of executing a schedule');
+  assert.equal(runs, beforeSchedule);
+  assert(elements.scheduleZone.textContent.includes('America/Los_Angeles'));
+  await elements.scheduleToggle.onclick();
+  assert.equal(savedPlan.enabled, true);
+  await elements.scheduleToggle.onclick();
+  assert.equal(savedPlan.enabled, false);
+  assert.equal(runs, beforeSchedule, 'Enable/pause controls must never directly create a phone job');
+  console.log('PASS: schedule parameters, fallback zone, save-paused and explicit enable/pause');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
