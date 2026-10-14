@@ -13,7 +13,7 @@ main{margin:0;padding:0}.workspace{display:grid;grid-template-columns:minmax(0,1
 .tabs{display:flex;gap:4px;margin-left:auto}.tabs button{white-space:nowrap;border:0;background:transparent;color:var(--muted);padding:6px 10px}.tabs button[aria-selected="true"]{color:var(--blue);background:#edf3ff}
 .card{background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}.card-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.card-body{padding:4px 18px 18px}
 .phone-panel{border:0;border-radius:0;background:transparent;overflow:visible}.screen-stage{display:flex;justify-content:center;align-items:flex-start;gap:12px;padding:0}
-.screen{--phone-height:clamp(320px,calc(100dvh - 160px),900px);height:var(--phone-height);width:calc(var(--phone-height) * 9 / 16);flex:none;position:relative;background:#111c2c;overflow:hidden}
+.screen{--phone-height:clamp(320px,calc(100dvh - 160px),900px);width:calc(var(--phone-height) * 9 / 16);max-width:calc(100% - 52px);height:auto;aspect-ratio:9/16;flex:none;position:relative;background:#111c2c;overflow:hidden}
 .screen img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain;cursor:crosshair}
 .screen p{position:absolute;inset:0;display:grid;place-content:center;color:#a7b6cc;padding:16px;margin:0;text-align:center;font-size:12px}
 .phone-tools{display:flex;flex-direction:column;gap:6px;padding-top:6px}.tool-button{position:relative;display:grid;place-items:center;width:40px;height:40px;padding:0;background:#fff;color:#637287;flex:none}
