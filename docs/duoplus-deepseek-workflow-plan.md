@@ -195,6 +195,17 @@ DeepSeek 只能选择已开放的基础动作。屏幕文字和工作流内容�
 - Windows 代理 7892 的 GitHub HTTPS 推送首次 Schannel TLS 握手失败（2026-10-14 15:00 附近）；立即切换同一代理的 OpenSSL + HTTP/1.1 后推送成功，没有直接反复重试。服务器经代理 7890 拉取成功。
 - 真实报告截图：C:/Users/admin/.codex/visualizations/2026/10/14/01a13852-6cec-7df3-be2e-183c6dca43ce/duoplus-real-single-test-report.png；本次搜索验收仍未通过，需要另一次真实执行验证输入、Top 结果和视频打开，本轮不为补测再次开机。
 
+## 修复后继续真实链路验收
+
+- 用户明确要求发现系统问题后继续修复和实测，直至单主题搜索与视频打开完成；前次停在失败记录处过早。
+- 已确认 4003 修复版本 04dc4f9、服务健康、无启用定时、设备已关机。本次通过相同真实工作流接口一次自动开机，预算 420 秒（含开机），16 个 AI 动作，结束后自动关机；仍使用官方原始模板及英文 `AI translator`。
+- 逐步监督任务日志与真实截图；若系统错误，先定位修复再验证，不把模型离线决策当实际完成，不自动重放结果不明的手机动作。
+- 真实任务 `0a73d4664715431fa12bb4b13329b516` 完成，含自动开机等待共 244.57 秒；开机请求只提交一次，约 128 秒后进入官方启动步骤。真实截图 WebP → PNG 正常，没有 Mock 或人为替代 AI 决策。
+- DeepSeek 共 5 次决策：点击搜索 → 输入 `AI translator`（clear_first）→ Enter 提交 → Top 页选择相关结果 → 根据实际播放页完成。实际下发 4 个 AI 动作，均成功；保存的 Top 页显示完整查询词和翻译器视频，最终播放页为 noppaft6q8 的 ZNP Z06 pocket translator，能看到翻译界面和播放器。
+- 自动关机请求接受后只读确认 SAOmk 状态为 2（已关机）；没有后续养号互动、循环或启用定时。真实搜索/打开视频验收通过，不代表完整养号、互动节点及原 RPA 滑动时长等价性已验证。
+- 监督发现 AI 日志 usage.elapsed_seconds 覆盖了流程累计时间，导致本次 AI 日志时间显示过早；原动作记录与事件顺序保留。修复为独立 model_elapsed_seconds，增加模型耗时不覆盖流程 180 秒时间的回归检查；不修改本次原始历史记录。
+- 证据位于 C:/Users/admin/.codex/visualizations/2026/10/14/01a13852-6cec-7df3-be2e-183c6dca43ce/：duoplus-live-top-results.png、duoplus-live-opened-video.png、duoplus-live-supervision.json；服务器原始日志与每步截图位于 output/duoplus_workflows/0a73d4664715431fa12bb4b13329b516/。
+
 ## 官方参考
 
 - https://help.duoplus.cn/docs/cloud-phone-list

@@ -184,12 +184,18 @@ class WorkflowTest(unittest.TestCase):
         for value in (shot, "data:image/webp;base64," + shot):
             with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), \
                     patch("requests.Session.post", return_value=response) as post:
-                workflow.decide("goal", {"screenshot": value}, [], time.monotonic() + 10)
+                _, usage = workflow.decide("goal", {"screenshot": value}, [], time.monotonic() + 10)
+                self.assertIn("model_elapsed_seconds", usage)
+                self.assertNotIn("elapsed_seconds", usage)
                 image_url = post.call_args.kwargs["json"]["messages"][1]["content"][1]["image_url"]["url"]
                 self.assertTrue(image_url.startswith("data:image/png;base64,"))
                 with Image.open(io.BytesIO(base64.b64decode(image_url.split(",", 1)[1]))) as image:
                     self.assertEqual(image.size, (72, 128))
         runner = self.runner()
+        with patch.object(workflow.time, "monotonic", return_value=runner.job["started_monotonic"] + 180):
+            runner.log("ai", **usage)
+        self.assertEqual(runner.job["logs"][-1]["elapsed_seconds"], 180)
+        self.assertEqual(runner.job["logs"][-1]["model_elapsed_seconds"], usage["model_elapsed_seconds"])
         with patch.object(duoplus, "submit", return_value={"screenshot": shot}):
             runner.observe()
         self.assertTrue(runner.screen["screenshot"].startswith("data:image/png;base64,"))

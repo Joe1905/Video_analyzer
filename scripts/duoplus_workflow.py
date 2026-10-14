@@ -320,7 +320,7 @@ def decide(task, screen, history, deadline, search_only=False):
         raise ValueError("DeepSeek 输出未完整结束。")
     decision = validate_decision(json.loads(choice["message"]["content"]))
     return decision, {"model": model, "usage": result.get("usage", {}),
-                      "elapsed_seconds": round(time.monotonic() - started, 2)}
+                      "model_elapsed_seconds": round(time.monotonic() - started, 2)}
 
 
 class SearchComplete(Exception):
