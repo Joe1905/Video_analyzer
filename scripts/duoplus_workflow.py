@@ -602,7 +602,8 @@ def start(config, body, data_dir, schedule_job=None):
     from duoplus_schedule import Store
     source, graph, job = prepare(body, config.get("image_id", ""), require_key=True)
     if schedule_job:
-        job.update({key: schedule_job[key] for key in ("id", "schedule_id", "window_end", "started_at")})
+        job.update({key: schedule_job[key] for key in ("id", "schedule_id", "window_end", "started_at",
+                                                       "timezone", "clock_offset") if key in schedule_job})
     # The shared phone lock remains held until the worker finishes, including cleanup.
     if not duoplus.LOCK.acquire(blocking=False):
         raise PhoneBusy("本站云手机操作正在执行，请等待完成。")
@@ -621,6 +622,9 @@ def start(config, body, data_dir, schedule_job=None):
                     EVENTS.pop(old_id)
             JOBS[job["id"]], EVENTS[job["id"]] = job, event
         store = Store(data_dir)
+        if not schedule_job:
+            clock = store.clock_info(job["image_id"])
+            job.update(timezone=clock["timezone"], clock_offset=clock["clock_offset"])
         store.put_run(job)
         runner = Runner(job, config, graph, job["topics"], event, directory, store=store)
         threading.Thread(target=runner.run, daemon=True, name="duoplus-workflow").start()

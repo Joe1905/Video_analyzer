@@ -189,6 +189,7 @@ class Store:
         run_id = uuid.uuid4().hex
         job = {"id": run_id, "card_key": plan["card_key"], "name": plan["name"],
                "schedule_id": plan["id"], "status": "queued", "started_at": now,
+               "timezone": plan["timezone"], "clock_offset": plan.get("clock_offset", 0),
                "window_end": end, "logs": [], "error": ""}
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")

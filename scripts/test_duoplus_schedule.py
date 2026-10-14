@@ -40,7 +40,7 @@ class ScheduleTest(unittest.TestCase):
         self.network = patch("requests.Session.post", side_effect=AssertionError("No network in offline tests"))
         self.network.start()
         self.addCleanup(self.network.stop)
-        self.config = patch.object(duoplus, "load_config", return_value={"api_key": "offline", "image_id": "phone-1"})
+        self.config = patch.object(duoplus, "load_config", return_value={"api_key": "offline-api-key", "image_id": "phone-1"})
         self.config.start()
         self.addCleanup(self.config.stop)
 
@@ -207,7 +207,7 @@ class ScheduleTest(unittest.TestCase):
         request.assert_not_called()
 
     def test_manual_failure_history_survives_job_memory_eviction(self):
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), \
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline-model-key"}), \
              patch.object(duoplus, "get_phone", side_effect=ValueError("offline phone failure")), \
              patch.object(workflow.threading, "Thread") as thread:
             thread.return_value.start.side_effect = lambda: thread.call_args.kwargs["target"]()
