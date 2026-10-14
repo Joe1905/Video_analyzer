@@ -9,10 +9,13 @@ async function main() {
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const elements = {};
   function element() {
+    const classes = {};
     return {value: '', files: [], disabled: false, hidden: false, children: [], dataset: {},
-      textContent: '', checked: false, attributes: {}, classList: {toggle() {}},
+      open: false, isConnected: true, textContent: '', checked: false, attributes: {},
+      classList: {toggle(name, enabled) { classes[name] = enabled; }, contains(name) { return !!classes[name]; }},
       setAttribute(name, value) { this.attributes[name] = value; },
-      removeAttribute(name) { delete this.attributes[name]; }, focus() {}, click() {},
+      removeAttribute(name) { delete this.attributes[name]; }, focus() { this.focused = true; }, click() {},
+      showModal() { this.open = true; }, close() { this.open = false; this.onclose?.(); },
       append(...children) { this.children.push(...children); },
       replaceChildren(...children) { this.children = children; }};
   }
@@ -29,6 +32,7 @@ async function main() {
   const requests = [];
   let runs = 0, failNextPoll = false;
   let savedPlan = null;
+  let historyRows = [], reportDetails = {}, delayedReport = null, releaseReport = null;
   const polls = {}, cancelled = new Set();
   const preview = {node_count: 37, ai_nodes: [], search_available: true, model: 'offline-model'};
   const context = vm.createContext({
@@ -48,7 +52,7 @@ async function main() {
       } else if (url === '/api/duoplus/workflow/schedules') {
         data = {schedules: savedPlan ? [savedPlan] : []};
       } else if (url.startsWith('/api/duoplus/workflow/history?')) {
-        data = {runs: []};
+        data = {runs: historyRows};
       } else if (url === '/api/duoplus/workflow/schedule') {
         savedPlan = {id: 'offline-schedule', ...body, card_key: body.payload.card_key,
           name: body.payload.name, timezone: 'America/Los_Angeles', clock_offset: 0,
@@ -64,6 +68,11 @@ async function main() {
       } else if (url === '/api/duoplus/workflow/run') {
         data = {id: 'offline-job-' + ++runs, status: 'queued', budget_seconds: 300};
       } else if (url.startsWith('/api/duoplus/workflow/job?id=')) {
+        const reportId = url.split('id=')[1];
+        if (reportDetails[reportId]) {
+          if (delayedReport === reportId) await new Promise(resolve => { releaseReport = resolve; });
+          return {ok: true, json: async () => reportDetails[reportId]};
+        }
         if (failNextPoll) { failNextPoll = false; throw Error('Simulated polling failure'); }
         const id = url.split('id=')[1];
         const status = cancelled.has(id) ? 'cancelled' : (polls[id]++ ? 'complete' : 'running');
@@ -210,6 +219,60 @@ async function main() {
   assert.equal(savedPlan.enabled, false);
   assert.equal(runs, beforeSchedule, 'Enable/pause controls must never directly create a phone job');
   console.log('PASS: schedule parameters, fallback zone, save-paused and explicit enable/pause');
+
+  const started = 1791993600;
+  reportDetails = {
+    'report-failed': {id: 'report-failed', name: '单主题搜索 <svg>', image_id: 'phone-1',
+      status: 'failed', timezone: 'America/Los_Angeles', started_at: started, finished_at: started + 40,
+      error: '页面未载入', logs: [
+        {kind: 'node', action: 'START', elapsed_seconds: 0},
+        {kind: 'node', action: 'OPEN_APP', elapsed_seconds: 1},
+        {kind: 'action', action: 'OPEN_APP', success: true, elapsed_seconds: 3.25, params: {package_name: 'com.zhiliaoapp.musically'}},
+        {kind: 'ai', decision: {status: 'blocked', observation: '<img src=x onerror=alert(1)>'}, elapsed_seconds: 35},
+        {kind: 'error', message: '页面未载入', elapsed_seconds: 40}
+      ]},
+    'report-success': {id: 'report-success', name: '单主题搜索', status: 'complete',
+      timezone: 'America/Los_Angeles', started_at: started + 1800, finished_at: started + 1872,
+      logs: [{kind: 'complete', message: '搜索完成', elapsed_seconds: 72}]}
+  };
+  historyRows = Object.values(reportDetails);
+  const beforeReports = runs;
+  await elements.historyRefresh.onclick();
+  elements.workflowHistoryTab.onclick();
+  assert(elements.workspace.classList.contains('history-view'), 'History needs the full table width');
+  assert.equal(elements.workflowRuns.children.length, 2);
+  const firstRow = elements.workflowRuns.children[0];
+  assert.equal(firstRow.children.length, 7);
+  assert.equal(firstRow.children[3].children[0].textContent, '失败');
+  assert.equal(firstRow.children[5].textContent, '40 秒');
+  const reportButton = firstRow.children[6].children[0];
+  await reportButton.onclick();
+  assert(elements.runReport.open);
+  assert.equal(elements.reportState.textContent, '失败');
+  assert.equal(elements.reportError.textContent, '页面未载入');
+  assert(elements.reportIdentity.textContent.includes('<svg>'), 'Names must remain literal text');
+  assert.equal(elements.runDetail.children.length, 4, 'A node marker and its action result form one action entry');
+  assert(elements.runDetail.children[1].children[0].textContent.endsWith('.250'));
+  assert.equal(elements.runDetail.children[2].children[1].children[1].textContent, '<img src=x onerror=alert(1)>');
+  elements.reportClose.onclick();
+  assert(!elements.runReport.open);
+  assert(reportButton.focused, 'Closing restores focus to the report action');
+
+  delayedReport = 'report-failed';
+  const stale = reportButton.onclick();
+  assert(elements.runReport.open);
+  elements.reportClose.onclick();
+  const successButton = elements.workflowRuns.children[1].children[6].children[0];
+  await successButton.onclick();
+  assert.equal(elements.reportState.textContent, '成功');
+  releaseReport();
+  await stale;
+  assert.equal(elements.reportState.textContent, '成功', 'A closed report response must not overwrite a newer report');
+  elements.reportClose.onclick();
+  assert.equal(runs, beforeReports, 'Reports must only read history, never execute a phone workflow');
+  elements.workflowBack.onclick();
+  assert(!elements.workspace.classList.contains('history-view'));
+  console.log('PASS: task table, report timestamps, failure details, safe text and stale-response isolation');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
