@@ -19,7 +19,11 @@
   document.body.append(dialog);
   const $ = selector => dialog.querySelector(selector);
   const mount = document.getElementById('driveMount');
-  if (mount) { mount.replaceChildren(dialog); dialog.classList.add('ud-embedded'); $('[data-close]').hidden = true; $('[data-done]').hidden = true; }
+  if (mount) {
+    const accountButton = document.getElementById('driveAccount');
+    mount.replaceChildren(dialog); dialog.classList.add('ud-embedded'); $('[data-close]').hidden = true; $('[data-done]').hidden = true;
+    if (accountButton) $('.ud-person').append(accountButton);
+  }
   const sort = document.createElement('select'); sort.className = 'ud-sort'; sort.setAttribute('aria-label', '文件排序');
   sort.innerHTML = '<option value="recent">最近上传</option><option value="name">名称排序</option><option value="size">文件大小</option><option value="expiry">即将到期</option>';
   $('.ud-tools').insertBefore(sort, $('[data-refresh]')); sort.onchange = () => render();
