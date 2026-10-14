@@ -9,10 +9,21 @@
     if (!response.ok) throw new Error(result.error || '请求失败，请重试。');
     return result;
   }
-  function row(name, detail, action) {
+  function row(name, detail, action, user = null) {
     const button = document.createElement('button'); button.type = 'button';
-    const label = document.createElement('span'), note = document.createElement('small');
-    label.textContent = name; note.textContent = detail; button.append(label, note);
+    if (user) {
+      const avatar = document.createElement('span'), fallback = document.createElement('span');
+      avatar.className = 'drive-login-avatar'; fallback.textContent = (name || '我').trim().slice(0, 1) || '我'; avatar.append(fallback);
+      if (user.avatarUrl) {
+        const image = document.createElement('img'); image.alt = `${name}的头像`; image.hidden = true;
+        image.onload = () => { image.hidden = false; fallback.hidden = true; };
+        image.onerror = () => { image.hidden = true; fallback.hidden = false; };
+        image.src = user.avatarUrl; avatar.append(image);
+      }
+      button.append(avatar);
+    }
+    const copy = document.createElement('span'), label = document.createElement('span'), note = document.createElement('small');
+    copy.className = 'drive-login-copy'; label.textContent = name; note.textContent = detail; copy.append(label, note); button.append(copy);
     button.onclick = () => run(action); return button;
   }
   async function run(action) {
@@ -23,12 +34,12 @@
   }
   function showOwners() {
     owner = null; $('driveLoginTitle').textContent = '选择云盘账户'; $('driveLoginBack').hidden = true; $('driveCreate').hidden = true;
-    $('driveLoginList').replaceChildren(...owners.map(item => row(item.name, `${item.accounts.length} 个设备账户`, () => showAccounts(item))));
+    $('driveLoginList').replaceChildren(...owners.map(item => row(item.name, `${item.accounts.length} 个设备账户`, () => showAccounts(item), item)));
     if (!owners.length) $('driveLoginList').textContent = '暂无可用账户，请先完成飞书用户同步。';
   }
   function showAccounts(item) {
     owner = item; $('driveLoginTitle').textContent = item.name; $('driveLoginBack').hidden = false; $('driveCreate').hidden = false; $('driveNickname').value = '';
-    $('driveLoginList').replaceChildren(...item.accounts.map(account => row(account.nickname, account.online ? '当前在线' : '设备账户', async () => finish(await request('select-account', {feishuUserId:item.id, accountId:account.id})))));
+    $('driveLoginList').replaceChildren(...item.accounts.map(account => row(account.nickname, account.online ? '当前在线' : '设备账户', async () => finish(await request('select-account', {feishuUserId:item.id, accountId:account.id})), account)));
     if (!item.accounts.length) $('driveLoginList').textContent = '还没有设备账户，可在下方新建。';
   }
   async function finish(payload) {

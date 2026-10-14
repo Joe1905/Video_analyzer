@@ -129,7 +129,14 @@
       if (run !== generation || !dialog.open) return;
       authenticated = true; files = result.files;
       $('[data-owner]').textContent = profile.currentUser.nickname;
-      $('[data-avatar]').textContent = profile.currentUser.nickname.slice(0, 1);
+      const avatar = $('[data-avatar]'), fallback = document.createElement('span');
+      fallback.textContent = profile.currentUser.nickname.slice(0, 1); avatar.replaceChildren(fallback);
+      if (profile.currentUser.avatarUrl) {
+        const image = document.createElement('img'); image.alt = `${profile.currentUser.nickname}的头像`; image.hidden = true;
+        image.onload = () => { image.hidden = false; fallback.hidden = true; };
+        image.onerror = () => { image.hidden = true; fallback.hidden = false; };
+        image.src = profile.currentUser.avatarUrl; avatar.append(image);
+      }
       if (!files.some(f => f.id === selected)) selected = '';
       render();
     } catch (error) {
