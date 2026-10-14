@@ -92,13 +92,16 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_library_accounts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT NOT NULL UNIQUE);
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT NOT NULL UNIQUE,
+                    deleted INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_manual_orders (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_bitable_records (
                     app_token TEXT NOT NULL, table_id TEXT NOT NULL, video_id TEXT NOT NULL,
                     record_id TEXT NOT NULL, PRIMARY KEY(app_token, table_id, video_id));
             """)
+            if "deleted" not in {row[1] for row in conn.execute("PRAGMA table_info(video_library_accounts)")}:
+                conn.execute("ALTER TABLE video_library_accounts ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
             legacy = {}
             for table in ("product_video_items", "account_video_items"):
                 for row in conn.execute(f"SELECT video_id,payload FROM {table} WHERE video_id NOT IN (SELECT video_id FROM shared_video_items)"):
@@ -142,7 +145,7 @@ def product(product_id):
 def accounts():
     with database() as conn:
         records = conn.execute("SELECT id,username,display_name,feishu_user_name,status,profile_json FROM tiktok_accounts WHERE deleted_at='' ORDER BY id").fetchall()
-        manual = conn.execute("SELECT id,handle FROM video_library_accounts ORDER BY id").fetchall()
+        manual = conn.execute("SELECT id,handle FROM video_library_accounts WHERE deleted=0 ORDER BY id").fetchall()
     result = []
     for row in records:
         profile = json.loads(row["profile_json"] or "{}")
@@ -184,16 +187,36 @@ def add_account(payload):
         value = parsed.path.rstrip("/").removeprefix("/@")
     else:
         value = value.removeprefix("@")
-    if not re.fullmatch(r"[A-Za-z0-9._]{1,24}", value) or value.endswith("."):
-        raise ValueError("TikTok 用户名需为 1–24 位字母、数字、下划线或点，不能以点结尾；请勿填写昵称")
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,24}", value):
+        raise ValueError("请填写 @ 后的 TikTok 用户名（例如 yakuza0.3）：支持 1–24 位英文字母、数字、下划线和英文句点 .；也可粘贴完整主页链接")
+    if value.endswith("."):
+        raise ValueError("用户名不能以英文句点 . 结尾；中间的点可正常使用，例如 yakuza0.3")
     handle = value.casefold()
     with _lock:
+        with database() as conn:
+            conn.execute("UPDATE video_library_accounts SET deleted=0 WHERE handle=?", (handle,))
         existing = [account for account in accounts() if account["handle"].casefold() == handle]
         if existing:
             return {"account": existing[0]}
         with database() as conn:
             conn.execute("INSERT OR IGNORE INTO video_library_accounts(handle) VALUES (?)", (handle,))
         return {"account": next(account for account in accounts() if account["handle"].casefold() == handle)}
+
+
+def delete_account(payload):
+    pid = str(payload.get("product_id") or "")
+    if not pid.startswith("account:manual:"):
+        raise ValueError("这里只能删除手动添加的账号；账号池来源请到 IP 池管理")
+    account_id = identifier(pid.removeprefix("account:manual:"))
+    with _lock, database() as conn:
+        row = conn.execute("SELECT payload FROM account_video_jobs WHERE product_id=?", (pid,)).fetchone()
+        job = json.loads(row[0]) if row else {}
+        if job.get("status") in {"queued", "running"} and job.get("owner") == _owner:
+            raise ValueError("该账号有任务正在处理，请完成后再删除")
+        result = conn.execute("UPDATE video_library_accounts SET deleted=1 WHERE id=?", (account_id,))
+        if not result.rowcount:
+            raise ValueError("手动账号不存在，请刷新列表")
+    return {"deleted": True, "product_id": pid}
 
 
 def video_tables(pid):
@@ -777,7 +800,7 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint in {"accounts", "jobs", "write-table", "orders", "collect-retention"}:
+        if handler.command == "POST" and endpoint in {"accounts", "accounts/delete", "jobs", "write-table", "orders", "collect-retention"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
@@ -786,6 +809,8 @@ def handle(handler, parsed, serve_file):
                 raise ValueError("请求必须为 JSON 对象")
             if endpoint == "accounts":
                 reply(handler, 200, add_account(payload))
+            elif endpoint == "accounts/delete":
+                reply(handler, 200, delete_account(payload))
             elif endpoint in {'orders', 'collect-retention'}:
                 from video_review_inputs import save_orders, start_collection
                 result = (save_orders if endpoint == 'orders' else start_collection)(sys.modules[__name__], payload)
