@@ -285,9 +285,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_webp_screenshot_reaches_model_as_png(self):
         source = io.BytesIO()
-        sample = Image.new("RGB", (72, 128), "blue")
-        sample.paste("white", (20, 30, 40, 90))
-        sample.save(source, format="WEBP")
+        Image.new("RGB", (72, 128), "blue").save(source, format="WEBP")
         shot = base64.b64encode(source.getvalue()).decode("ascii")
         response = SimpleNamespace(ok=True, json=lambda: {"choices": [{"finish_reason": "stop",
                                    "message": {"content": json.dumps(self.decision())}}]})
@@ -311,31 +309,6 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(runner.screen["screenshot"].startswith("data:image/png;base64,"))
         with Image.open(Path(self.directory.name) / "screen-001.png") as image:
             self.assertEqual(image.format, "PNG")
-
-    def test_transient_blank_frame_is_observed_again_without_replaying_actions(self):
-        def shot(blank):
-            frame = Image.new("RGB", (72, 128), "black")
-            if not blank:
-                frame.paste("white", (20, 30, 40, 90))
-            encoded = io.BytesIO()
-            frame.save(encoded, format="PNG")
-            return base64.b64encode(encoded.getvalue()).decode("ascii")
-        runner = self.runner()
-        with patch.object(duoplus, "submit", side_effect=[{"screenshot": shot(True)}, {"screenshot": shot(False)}]) as submit, \
-                patch.object(runner, "wait") as wait:
-            runner.observe()
-        self.assertEqual(submit.call_count, 2)
-        self.assertTrue(all(len(call.args) == 2 for call in submit.call_args_list))
-        wait.assert_called_once_with(500)
-        self.assertEqual(runner.shot_count, 2)
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), \
-                patch("requests.Session.post") as model, self.assertRaisesRegex(ValueError, "渲染"):
-            workflow.decide("goal", {"screenshot": shot(True)}, [], time.monotonic() + 10)
-        model.assert_not_called()
-        with patch.object(duoplus, "submit", return_value={"screenshot": shot(True)}) as submit, \
-                patch.object(runner, "wait"), self.assertRaisesRegex(ValueError, "三次"):
-            runner.observe()
-        self.assertEqual(submit.call_count, 3)
 
     def test_corrupt_webp_blocks_model_request(self):
         shot = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPinvalid").decode("ascii")

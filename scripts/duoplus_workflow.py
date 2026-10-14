@@ -332,25 +332,11 @@ def screenshot_payload(shot):
     return encoded, mime
 
 
-def screenshot_ready(encoded):
-    try:
-        with Image.open(io.BytesIO(base64.b64decode(encoded))) as source:
-            if source.width * source.height > 16_000_000:
-                raise ValueError("截图尺寸过大。")
-            region = source.crop((0, int(source.height * 0.12), source.width, int(source.height * 0.96)))
-            low, high = region.convert("L").resize((64, 64)).getextrema()
-            return high - low > 4
-    except OSError as exc:
-        raise ValueError("截图无法解析。") from exc
-
-
 def decide(task, screen, history, deadline, search_only=False):
     key = os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
         raise ValueError("服务器未配置 DEEPSEEK_API_KEY。")
     encoded, mime = screenshot_payload(screen.get("screenshot"))
-    if not screenshot_ready(encoded):
-        raise ValueError("截图尚未渲染，不能交给 AI 决策。")
     instruction = (
         'You control one Android TikTok phone. Return a strict JSON object. '
         'Schema: {"status":"action|done|blocked","observation":"visible screen facts",'
@@ -363,7 +349,6 @@ def decide(task, screen, history, deadline, search_only=False):
         'When an unrelated recoverable TikTok panel obscures the task target (for example TikTok Tako while asked to like '
         'a video), use PAGE_BACK to restore the prior task screen instead of immediately marking blocked. '
         'Do not back out of a profile when the goal requires following its creator. Never enter or send messages to Tako. '
-        'For like/save/follow goals, an already-active state satisfies the goal; never toggle it off or unfollow. '
         'Coordinates are relative 0..1000, NOT screenshot pixels. Top left (0,0), bottom right (1000,1000). '
         'Input requires focusing the search/text field first. Use clear_first=true when replacing an existing query. '
         'For coordinate clicks, choose the target center and include top-level target_bounds=[left,top,right,bottom] '
@@ -502,7 +487,7 @@ class Runner:
             self.log("wait", action="WAIT_TIME", message=message, params={"wait_time": duration})
             self.wait(duration)
 
-    def capture(self):
+    def observe(self):
         self.check()
         screen = duoplus.submit(self.config, self.phone, deadline=self.deadline)
         self.screen = screen
@@ -521,18 +506,6 @@ class Runner:
         self.log("observation", message="屏幕已读取", current_app=screen.get("current_app"),
                  evidence=self.job.get("last_screen"))
         return screen
-
-    def observe(self):
-        for attempt in range(3):
-            screen = self.capture()
-            encoded, _ = screenshot_payload(screen.get("screenshot"))
-            if screenshot_ready(encoded):
-                return screen
-            self.log("wait", message="画面尚未渲染，等待后重新读取", params={"wait_time": 500},
-                     evidence=self.job.get("last_screen"))
-            if attempt == 2:
-                raise ValueError("连续三次截图未渲染，停止继续操作。")
-            self.wait(500)
 
     def action(self, action, params):
         self.check()
