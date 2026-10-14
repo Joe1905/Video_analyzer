@@ -17,6 +17,7 @@ async function main() {
   Object.assign(elements.workflowBudget, {value: '300'});
   Object.assign(elements.workflowSteps, {value: '16'});
   Object.assign(elements.workflowTopics, {value: 'AI translator'});
+  Object.assign(elements.workflowMode, {value: 'search'});
   elements.workflowPowerOff.checked = true;
   const template = JSON.parse(fs.readFileSync(path.join(__dirname, 'workflows/duoplus_tiktok_topic.json'), 'utf8'));
   const requests = [];
