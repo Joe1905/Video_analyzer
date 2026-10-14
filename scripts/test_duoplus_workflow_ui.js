@@ -91,6 +91,7 @@ async function main() {
     }
   });
   await vm.runInContext(script, context);
+  assert.equal(vm.runInContext('parameterText({duration: 250})', context), '滑动时长：250ms');
   assert.equal(requests.length, 3); // Config, saved cards and history use only fake APIs.
   assert.equal(elements.configView.hidden, false);
   assert(elements.configStatus.textContent.includes('请先配置'));

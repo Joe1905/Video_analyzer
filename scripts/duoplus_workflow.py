@@ -31,7 +31,7 @@ PARAM_KEYS = {
     "CLICK_COORDINATE": {"x", "y", "wait_after"},
     "INPUT_CONTENT": {"content", "clear_first", "wait_after"},
     "KEYBOARD_OPERATION": {"key", "wait_after"},
-    "SLIDE_PAGE": {"direction", "start_x", "start_y", "end_x", "end_y", "wait_after"},
+    "SLIDE_PAGE": {"direction", "start_x", "start_y", "end_x", "end_y", "duration", "wait_after"},
     "PAGE_BACK": {"wait_after"}, "WAIT_TIME": {"wait_time"},
 }
 JOBS = {}
@@ -68,6 +68,54 @@ def interval(data, fixed, low, high, maximum):
     start = integer(data.get(low), 0, maximum)
     end = integer(data.get(high), start, maximum)
     return start, end
+
+
+def randomized_wait(value, maximum=10000):
+    baseline = integer(value, 0, maximum)
+    return random.randint(baseline, min(maximum, baseline + round(baseline * 0.15))) if baseline else 0
+
+
+def ai_params(decision):
+    """Vary timing/gestures without changing text, selectors or the chosen target."""
+    params = copy.deepcopy(decision["params"])
+    action = decision["action"]
+    if "wait_after" in params:
+        params["wait_after"] = randomized_wait(params["wait_after"])
+    if action == "WAIT_TIME":
+        params["wait_time"] = randomized_wait(params["wait_time"])
+    if action == "CLICK_COORDINATE" and decision.get("target_bounds"):
+        left, top, right, bottom = decision["target_bounds"]
+        for key, low, high in (("x", left, right), ("y", top, bottom)):
+            inset = (high - low) / 4
+            start, end = max(low + inset, params[key] - 4), min(high - inset, params[key] + 4)
+            if start <= end:
+                params[key] = min(high, max(low, round(random.uniform(start, end))))
+    if action == "SLIDE_PAGE":
+        direction = params["direction"]
+        points = {"up": (500, 780, 500, 260), "down": (500, 260, 500, 780),
+                  "left": (780, 500, 260, 500), "right": (260, 500, 780, 500)}[direction]
+        sx, sy, ex, ey = [float(params.get(key, fallback)) for key, fallback in
+                          zip(("start_x", "start_y", "end_x", "end_y"), points)]
+        scale = random.uniform(0.9, 1.1)
+        tx, ty = random.uniform(-10, 10), random.uniform(-10, 10)
+        for key, value in (("start_x", sx + tx), ("start_y", sy + ty),
+                           ("end_x", sx + tx + (ex - sx) * scale),
+                           ("end_y", sy + ty + (ey - sy) * scale)):
+            params[key] = round(max(1, min(999, value)))
+        params["duration"] = randomized_wait(params["duration"], 2000) if "duration" in params else random.randint(200, 300)
+    return params
+
+
+def swipe_command(params):
+    """Only generate a numeric touchscreen swipe; never accept shell text."""
+    values = [round(number(params[key], 0, 1000) / 1000 * (size - 1))
+              for key, size in (("start_x", 1080), ("start_y", 1920), ("end_x", 1080), ("end_y", 1920))]
+    values.append(integer(params["duration"], 50, 2000))
+    axis = 1 if params["direction"] in {"up", "down"} else 0
+    sign = -1 if params["direction"] in {"up", "left"} else 1
+    if (values[axis + 2] - values[axis]) * sign <= 0:
+        raise ValueError("滑动轨迹过短或方向不符。")
+    return "input touchscreen swipe " + " ".join(map(str, values))
 
 
 def compile_workflow(workflow):
@@ -163,7 +211,8 @@ def compile_workflow(workflow):
                 number(data.get("position_x"), 0, 1080)
                 number(data.get("position_y"), 0, 1920)
                 number(data.get("random_start_range", 0), 0, 100)
-                # The HTTP API does not document RPA gesture duration equivalence.
+                start_duration = integer(data.get("start_duration", 200), 50, 2000)
+                integer(data.get("end_duration", 300), start_duration, 2000)
             children = graph(data.pop("children"), depth + 1) if "children" in data else []
             if (action in {"FOR_DATA", "FOR_TIMES", "IF_CONDITION"}) != bool(children):
                 raise ValueError("循环/条件节点需要子流程，普通节点不能包含子流程。")
@@ -197,7 +246,7 @@ def preview(workflow):
         "search_available": any(node["id"] == SEARCH_NODE_ID and node["data"]["action"] == "AI_OPERATION" for node in nodes),
         "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash-vision-exp"),
         "warnings": ["固定像素坐标按模板基准 1080×1920 转换；设备物理尺寸不符会停止。",
-                     "随机滑动保留方向和距离，HTTP 接口不保证与原 RPA 的持续时间完全等价。",
+                     "点击/滑动/停顿加入受限随机变化；滑动时长由受限 input swipe 命令控制，尚待真机验证。",
                      "动作结果不确定时停止；不会沿用官方 exception_type=2 的跳过规则。",
                      "官方 500 步和超长限时受本站步数、时间预算约束。"]}
 
@@ -220,6 +269,14 @@ def validate_decision(decision):
             raise ValueError("元素点击需要明确选择器。")
         if "element_order" in params:
             integer(params["element_order"], 0, 100)
+    if "target_bounds" in decision:
+        bounds = decision["target_bounds"]
+        if action != "CLICK_COORDINATE" or not isinstance(bounds, list) or len(bounds) != 4:
+            raise ValueError("目标框只能用于坐标点击。")
+        left, top, right, bottom = [number(value, 0, 1000) for value in bounds]
+        if not left < right or not top < bottom or not left <= params["x"] <= right or not top <= params["y"] <= bottom:
+            raise ValueError("点击坐标必须位于有效目标框内。")
+        decision = {**decision, "target_bounds": [left, top, right, bottom]}
     if action == "INPUT_CONTENT":
         if not isinstance(params.get("content"), str) or not 1 <= len(params["content"]) <= 2000:
             raise ValueError("输入文本长度无效。")
@@ -237,6 +294,13 @@ def validate_decision(decision):
             raise ValueError("滑动轨迹需要完整的起止坐标。")
         for key in points:
             number(params[key], 0, 1000)
+        if "duration" in params:
+            integer(params["duration"], 50, 2000)
+        if points:
+            axis = "y" if params["direction"] in {"up", "down"} else "x"
+            sign = -1 if params["direction"] in {"up", "left"} else 1
+            if (params["end_" + axis] - params["start_" + axis]) * sign <= 0:
+                raise ValueError("滑动轨迹必须与方向一致。")
     return decision
 
 
@@ -283,9 +347,14 @@ def decide(task, screen, history, deadline, search_only=False):
         'If any of these is required return blocked. Prefer UI selectors when available; otherwise use screenshot coordinates. '
         'Coordinates are relative 0..1000, NOT screenshot pixels. Top left (0,0), bottom right (1000,1000). '
         'Input requires focusing the search/text field first. Use clear_first=true when replacing an existing query. '
+        'For coordinate clicks, choose the target center and include top-level target_bounds=[left,top,right,bottom] '
+        'in relative 0..1000 units only when the clickable rectangle is clearly visible. '
+        'The runner may vary the click within the central target area; without bounds coordinates stay exact. '
         'Allowed action/parameter keys: ' + json.dumps({k: sorted(v) for k, v in PARAM_KEYS.items()}) + '. '
         'WAIT_TIME.wait_time and wait_after are milliseconds, at most 10000. '
-        'SLIDE_PAGE.direction: up/down/left/right. KEYBOARD_OPERATION.key: enter/delete/tab/escape/space. '
+        'SLIDE_PAGE.direction: up/down/left/right; optional duration is 50..2000 milliseconds. '
+        'The runner slightly varies valid swipe trajectories and pauses, while preserving direction and text. '
+        'KEYBOARD_OPERATION.key: enter/delete/tab/escape/space. '
         'OPEN_APP.package_name must be ' + PACKAGE + '. '
     )
     if search_only:
@@ -381,6 +450,12 @@ class Runner:
         self.event.wait(duration)
         self.check()
 
+    def pause(self, milliseconds, message, maximum=10000):
+        duration = randomized_wait(milliseconds, maximum)
+        if duration:
+            self.log("wait", action="WAIT_TIME", message=message, params={"wait_time": duration})
+            self.wait(duration)
+
     def observe(self):
         self.check()
         screen = duoplus.submit(self.config, self.phone, deadline=self.deadline)
@@ -399,7 +474,13 @@ class Runner:
     def action(self, action, params):
         self.check()
         duoplus.validate_steps([{"action": action, "params": params}])
-        result = duoplus.submit(self.config, self.phone, action, params, deadline=self.deadline)
+        if action == "SLIDE_PAGE" and "duration" in params:
+            command = swipe_command(params)
+            result = duoplus.submit(self.config, self.phone, "SHELL_COMMAND",
+                                   {"command": command, "need_screenshot": False,
+                                    "wait_after": params.get("wait_after", 0)}, deadline=self.deadline)
+        else:
+            result = duoplus.submit(self.config, self.phone, action, params, deadline=self.deadline)
         self.log("action", action=action, params=params, success=True,
                  result={k: v for k, v in result.items() if k not in {"screenshot", "task_id"}})
         self.observe()
@@ -444,8 +525,9 @@ class Runner:
             if self.job["mode"] == "search" and decision["action"] == "INPUT_CONTENT":
                 if decision["params"]["content"].strip().casefold() != variables["S-Content"].strip().casefold():
                     raise ValueError("AI 输入词与本轮主题不符，已停止。")
-            self.action(decision["action"], decision["params"])
-            history.append(decision)
+            params = ai_params(decision)
+            self.action(decision["action"], params)
+            history.append({**decision, "params": params})
 
     def graph_run(self, graph, variables):
         for node in graph:
@@ -457,7 +539,7 @@ class Runner:
             with STATE_LOCK:
                 self.job["current_node"] = node["id"]
             self.log("node", node_id=node["id"], action=action)
-            self.wait(integer(data.get("wait_before", 0), 0, 10000))
+            self.pause(data.get("wait_before", 0), "操作前等待")
             if action == "END_TASK":
                 return
             if action == "FOR_DATA":
@@ -484,7 +566,9 @@ class Runner:
                 variables[data["save_result"]] = value.strip()
             elif action == "WAIT_TIME":
                 low, high = interval(data, "fixed_time", "start_time", "end_time", 30000)
-                self.wait(random.randint(low, high))
+                duration = randomized_wait(low, 30000) if data.get("type", "fixed_value") == "fixed_value" else random.randint(low, high)
+                self.log("wait", action=action, message="浏览等待", params={"wait_time": duration})
+                self.wait(duration)
             elif action == "AI_OPERATION":
                 self.ai(node, variables)
                 if self.job["mode"] == "search" and node["id"] == SEARCH_NODE_ID:
@@ -498,30 +582,36 @@ class Runner:
                 self.log("adb", success=True, command=data["adb_command"])
                 self.observe()
             elif action == "OPEN_APP":
-                self.action(action, {"package_name": data["package_name"], "wait_after": 1200})
+                self.action(action, {"package_name": data["package_name"], "wait_after": randomized_wait(1200)})
             elif action == "PAGE_BACK":
-                self.action(action, {"wait_after": 500})
+                self.action(action, {"wait_after": randomized_wait(500)})
             elif action == "CLICK_COORDINATE":
                 spread = number(data.get("random_distance", 0), 0, 100)
-                sx = number(data.get("random_distance_x", spread), 0, 100)
-                sy = number(data.get("random_distance_y", spread), 0, 100)
+                sx = number(data.get("random_distance_x", spread), 0, 100) or 8
+                sy = number(data.get("random_distance_y", spread), 0, 100) or 8
                 x = number(data["x_coordinate"], 0, 1080) + random.uniform(-sx, sx)
                 y = number(data["y_coordinate"], 0, 1920) + random.uniform(-sy, sy)
                 self.action(action, {"x": round(max(0, min(1080, x)) / 1080 * 1000),
-                                     "y": round(max(0, min(1920, y)) / 1920 * 1000), "wait_after": 500})
+                                     "y": round(max(0, min(1920, y)) / 1920 * 1000), "wait_after": randomized_wait(500)})
             elif action == "SLIDE_PAGE":
                 distance = random.uniform(float(data["start_distance"]), float(data["end_distance"]))
-                spread = float(data.get("random_start_range", 0))
+                spread = max(24, float(data.get("random_start_range", 0)))
                 x = float(data["position_x"]) + random.uniform(-spread, spread)
                 y = float(data["position_y"]) + random.uniform(-spread, spread)
                 dx, dy = {"up": (0, -distance), "down": (0, distance),
                           "left": (-distance, 0), "right": (distance, 0)}[data["direction"]]
-                params = {"direction": data["direction"], "wait_after": 600}
+                if dx:
+                    dy += random.uniform(-12, 12)
+                else:
+                    dx += random.uniform(-12, 12)
+                params = {"direction": data["direction"], "wait_after": randomized_wait(600),
+                          "duration": random.randint(integer(data.get("start_duration", 200), 50, 2000),
+                                                     integer(data.get("end_duration", 300), 50, 2000))}
                 for key, value, scale in (("start_x", x, 1080), ("start_y", y, 1920),
                                           ("end_x", x + dx, 1080), ("end_y", y + dy, 1920)):
                     params[key] = round(max(0, min(scale, value)) / scale * 1000)
                 self.action(action, params)
-            self.wait(integer(data.get("wait_after", 0), 0, 10000))
+            self.pause(data.get("wait_after", 0), "操作后等待")
 
     def run(self):
         status, error = "complete", ""

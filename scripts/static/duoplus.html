@@ -178,8 +178,8 @@ async function loadHistory(){
   }
 }
 let reportRequest=0,reportJob=null,reportOrigin=null;
-const parameterLabels={content:'输入',clear_first:'清空原内容',package_name:'应用',x:'X',y:'Y',direction:'方向',key:'按键',wait_time:'等待',wait_before:'操作前等待',wait_after:'操作后等待',resource_id:'控件 ID',content_desc:'控件描述',text:'控件文字',class_name:'控件类型',element_order:'序号',start_x:'起点 X',start_y:'起点 Y',end_x:'终点 X',end_y:'终点 Y'};
-function parameterText(params){return Object.entries(params||{}).filter(([key,value])=>parameterLabels[key]&&value!==undefined&&!(key.startsWith('wait_')&&value===0)).map(([key,value])=>{let shown=typeof value==='boolean'?(value?'是':'否'):String(value);if(key.startsWith('wait_'))shown+='ms';if(key==='direction')shown={up:'向上',down:'向下',left:'向左',right:'向右'}[value]||shown;return parameterLabels[key]+'：'+shown}).join('　')}
+const parameterLabels={content:'输入',clear_first:'清空原内容',package_name:'应用',x:'X',y:'Y',direction:'方向',duration:'滑动时长',key:'按键',wait_time:'等待',wait_before:'操作前等待',wait_after:'操作后等待',resource_id:'控件 ID',content_desc:'控件描述',text:'控件文字',class_name:'控件类型',element_order:'序号',start_x:'起点 X',start_y:'起点 Y',end_x:'终点 X',end_y:'终点 Y'};
+function parameterText(params){return Object.entries(params||{}).filter(([key,value])=>parameterLabels[key]&&value!==undefined&&!(key.startsWith('wait_')&&value===0)).map(([key,value])=>{let shown=typeof value==='boolean'?(value?'是':'否'):String(value);if(key.startsWith('wait_')||key==='duration')shown+='ms';if(key==='direction')shown={up:'向上',down:'向下',left:'向左',right:'向右'}[value]||shown;return parameterLabels[key]+'：'+shown}).join('　')}
 function reportEvent(log){
   let title=log.message||actionLabels[log.action]||'执行步骤',detail=parameterText(log.params);
   if(log.kind==='error'){title='执行失败';detail=log.message||''}

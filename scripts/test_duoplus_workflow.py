@@ -153,6 +153,104 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(action.call_args.args[1]["x"], 859)
             self.assertEqual(action.call_args.args[1]["y"], 344)
 
+    def test_ai_randomness_keeps_click_target_and_exact_text(self):
+        click = self.decision("CLICK_COORDINATE", {"x": 500, "y": 500, "wait_after": 1000})
+        click["target_bounds"] = [480, 480, 520, 520]
+        workflow.validate_decision(click)
+        with patch.object(workflow.random, "uniform", side_effect=lambda low, high: high), \
+                patch.object(workflow.random, "randint", side_effect=lambda low, high: high):
+            params = workflow.ai_params(click)
+            self.assertEqual((params["x"], params["y"]), (504, 504))
+            self.assertEqual(params["wait_after"], 1150)
+            self.assertEqual(click["params"]["x"], 500)
+            plain = self.decision("CLICK_COORDINATE", {"x": 500, "y": 500})
+            self.assertEqual(workflow.ai_params(plain), plain["params"])
+            text = self.decision("INPUT_CONTENT", {"content": "AI translator", "clear_first": True, "wait_after": 1000})
+            self.assertEqual(workflow.ai_params(text)["content"], "AI translator")
+            selector = self.decision("CLICK_ELEMENT", {"text": "Top", "element_order": 0, "wait_after": 1000})
+            self.assertEqual(workflow.ai_params(selector)["element_order"], 0)
+        click["target_bounds"] = [600, 480, 620, 520]
+        with self.assertRaisesRegex(ValueError, "目标框"):
+            workflow.validate_decision(click)
+
+    def test_random_swipe_preserves_directions_and_limits(self):
+        rng = workflow.random.Random(19)
+        outcomes = set()
+        with patch.object(workflow.random, "uniform", side_effect=rng.uniform), \
+                patch.object(workflow.random, "randint", side_effect=rng.randint):
+            for direction in ("up", "down", "left", "right"):
+                for _ in range(30):
+                    decision = self.decision("SLIDE_PAGE", {"direction": direction})
+                    params = workflow.ai_params(decision)
+                    workflow.validate_decision(self.decision("SLIDE_PAGE", params))
+                    self.assertTrue(200 <= params["duration"] <= 300)
+                    outcomes.add(tuple(sorted(params.items())))
+                    self.assertRegex(workflow.swipe_command(params), r"^input touchscreen swipe \d+ \d+ \d+ \d+ \d+$")
+        self.assertGreater(len(outcomes), 4)
+
+    def test_template_swipe_randomizes_start_distance_duration_and_pause(self):
+        runner = self.runner(mode="full")
+        node = next(n for n in workflow.flatten(runner.graph) if n["data"]["action"] == "SLIDE_PAGE")
+        with patch.object(runner, "wait"), patch.object(runner, "action") as action, \
+                patch.object(workflow.random, "uniform", side_effect=[600, 24, -24, 12]), \
+                patch.object(workflow.random, "randint", side_effect=lambda low, high: high):
+            runner.graph_run([node], {})
+        params = action.call_args.args[1]
+        self.assertEqual(params["duration"], 300)
+        self.assertEqual(params["wait_after"], 690)
+        self.assertEqual(params["start_x"], round(440 / 1080 * 1000))
+        self.assertEqual(params["start_y"], round(1476 / 1920 * 1000))
+        self.assertEqual(params["end_y"], round(876 / 1920 * 1000))
+        self.assertNotEqual(params["start_x"], params["end_x"])
+
+    def test_duration_swipe_uses_only_generated_command_and_observes_once(self):
+        runner = self.runner()
+        params = {"direction": "up", "start_x": 500, "start_y": 780,
+                  "end_x": 500, "end_y": 260, "duration": 250, "wait_after": 600}
+        with patch.object(duoplus, "submit", return_value={"success": True}) as submit, \
+                patch.object(runner, "observe") as observe:
+            runner.action("SLIDE_PAGE", params)
+        self.assertEqual(submit.call_count, 1)
+        self.assertEqual(submit.call_args.args[2], "SHELL_COMMAND")
+        self.assertEqual(submit.call_args.args[3]["command"], "input touchscreen swipe 540 1497 540 499 250")
+        observe.assert_called_once()
+        self.assertEqual(runner.job["logs"][-1]["params"]["duration"], 250)
+        with self.assertRaises(ValueError):
+            workflow.validate_decision(self.decision("SHELL_COMMAND", {"command": "anything"}))
+        with self.assertRaises(ValueError):
+            duoplus.validate_steps([{"action": "SHELL_COMMAND", "params": {"command": "anything"}}])
+        params["duration"] = "250; other command"
+        with self.assertRaises(ValueError):
+            workflow.swipe_command(params)
+
+    def test_fixed_and_random_waits_preserve_minimum_and_original_interval(self):
+        runner = self.runner(mode="full")
+        fixed = next(n for n in workflow.flatten(runner.graph) if n["data"]["action"] == "WAIT_TIME")
+        ranged = next(n for n in workflow.flatten(runner.graph) if n["data"]["action"] == "WAIT_TIME"
+                      and n["data"]["type"] == "interval_random")
+        with patch.object(runner, "wait") as wait, patch.object(workflow.random, "randint", side_effect=lambda low, high: high):
+            runner.graph_run([fixed, ranged], {})
+        self.assertEqual([call.args[0] for call in wait.call_args_list], [8050, 8000])
+        self.assertEqual([log["params"]["wait_time"] for log in runner.job["logs"] if log["kind"] == "wait"], [8050, 8000])
+        for value in (0, 10000, 30000):
+            self.assertEqual(workflow.randomized_wait(value, max(10000, value)), value)
+
+    def test_invalid_duration_and_reversed_swipe_rejected_before_cloud(self):
+        for duration in (0, 2001, float("nan")):
+            candidate = copy.deepcopy(self.original)
+            def change(graph):
+                for node in graph["nodes"]:
+                    if node["data"]["action"] == "SLIDE_PAGE":
+                        node["data"]["start_duration"] = duration
+                    if "children" in node["data"]:
+                        change(node["data"]["children"])
+            change(candidate)
+            with self.assertRaises(ValueError):
+                workflow.compile_workflow(candidate)
+        with self.assertRaises(ValueError):
+            workflow.validate_decision(self.decision("SLIDE_PAGE", {"direction": "up", "start_x": 500,
+                                        "start_y": 200, "end_x": 500, "end_y": 700}))
+
     def test_failed_action_is_never_retried(self):
         runner = self.runner()
         with patch.object(duoplus, "submit", side_effect=ValueError("uncertain")) as submit, patch.object(runner, "observe") as observe:
