@@ -15,6 +15,7 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         with patch.dict(os.environ, {"LLM_DATA_DIR": self.directory.name,
+                                     "XDG_CACHE_HOME": self.directory.name,
                                      "DEEPSEEK_API_KEY": "upstream-test-key"}):
             self.service = Service()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -80,6 +81,11 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(APIError) as error:
             self.service.transcribe(io.BytesIO(b"test"), "es", self.service.model_name)
         self.assertEqual(error.exception.status, 503)
+        self.service.cache.mkdir()
+        (self.service.cache / f"{self.service.model_name}.pt").write_bytes(b"test-cache")
+        with self.service.asr_lock, self.assertRaises(APIError) as error:
+            self.service.transcribe(io.BytesIO(b"test"), "es", self.service.model_name)
+        self.assertEqual(error.exception.status, 429)
 
     def test_malformed_json_and_missing_file(self):
         response = requests.post(self.url + "/v1/chat/completions", headers={**self.headers, "Content-Type": "application/json"}, data=b"{")
