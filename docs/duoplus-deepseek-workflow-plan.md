@@ -205,6 +205,7 @@ DeepSeek 只能选择已开放的基础动作。屏幕文字和工作流内容�
 - 自动关机请求接受后只读确认 SAOmk 状态为 2（已关机）；没有后续养号互动、循环或启用定时。真实搜索/打开视频验收通过，不代表完整养号、互动节点及原 RPA 滑动时长等价性已验证。
 - 监督发现 AI 日志 usage.elapsed_seconds 覆盖了流程累计时间，导致本次 AI 日志时间显示过早；原动作记录与事件顺序保留。修复为独立 model_elapsed_seconds，增加模型耗时不覆盖流程 180 秒时间的回归检查；不修改本次原始历史记录。
 - 证据位于 C:/Users/admin/.codex/visualizations/2026/10/14/01a13852-6cec-7df3-be2e-183c6dca43ce/：duoplus-live-top-results.png、duoplus-live-opened-video.png、duoplus-live-supervision.json；服务器原始日志与每步截图位于 output/duoplus_workflows/0a73d4664715431fa12bb4b13329b516/。
+- 本次真实 AI 使用 7,141 tokens；模型耗时与流程时间分离修复提交 cf09f49，4003 Docker 内 19 项工作流回归通过。确认两次任务均已结束、定时为空、/api/jobs=[] 后仅重启 4003；健康检查 ok，成功及失败记录仍在，页面实际显示成功 / 245 秒。4002/4004 未改动。
 
 ## 官方参考
 
