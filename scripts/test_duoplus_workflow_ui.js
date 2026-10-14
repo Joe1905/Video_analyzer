@@ -84,6 +84,30 @@ async function main() {
   assert.equal(elements.configView.hidden, false);
   assert(elements.configStatus.textContent.includes('请先配置'));
 
+  assert.equal(elements.workflowMenu.hidden, false);
+  assert.equal(elements.workflowDetail.hidden, true, 'Menu must not expose workflow parameters');
+  const beforeNavigation = runs;
+  elements.workflowCardSearch.onclick();
+  assert.equal(elements.workflowMenu.hidden, true);
+  assert.equal(elements.workflowDetail.hidden, false);
+  elements.workflowTopics.value = 'draft topic';
+  elements.workflowScheduleTab.onclick();
+  assert.equal(elements.workflowRunPanel.hidden, true);
+  assert.equal(elements.workflowSchedulePanel.hidden, false);
+  elements.workflowHistoryTab.onclick();
+  assert.equal(elements.workflowSchedulePanel.hidden, true);
+  assert.equal(elements.workflowHistoryPanel.hidden, false);
+  elements.workflowBack.onclick();
+  assert.equal(elements.workflowMenu.hidden, false);
+  assert.equal(elements.workflowDetail.hidden, true);
+  elements.workflowCardSearch.onclick();
+  assert.equal(elements.workflowRunPanel.hidden, false);
+  assert.equal(elements.workflowHistoryPanel.hidden, true);
+  assert.equal(elements.workflowTopics.value, 'draft topic', 'Return/reopen must retain unsaved input');
+  assert.equal(runs, beforeNavigation, 'Navigating menus must never start a phone task');
+  elements.workflowTopics.value = 'AI translator';
+  console.log('PASS: card menu, exclusive detail tabs and draft-preserving navigation');
+
   await elements.workflowSearch.onclick();
   const run = requests.find(item => item.url === '/api/duoplus/workflow/run');
   assert.equal(run.body.mode, 'search');
@@ -97,6 +121,13 @@ async function main() {
   failNextPoll = true;
   await elements.workflowSearch.onclick();
   assert(!elements.workflowCancel.disabled, 'A lost status response must retain cancellation');
+  const beforeReturn = runs;
+  elements.workflowBack.onclick();
+  assert(!elements.workflowCardSearch.disabled, 'The active card must remain reachable');
+  elements.workflowCardSearch.onclick();
+  assert.equal(elements.workflowDetail.hidden, false);
+  assert.equal(elements.workflowCancel.hidden, false);
+  assert.equal(runs, beforeReturn, 'Returning to an interrupted poll must not create a second job');
   elements.workflowCardFull.onclick();
   assert.equal(elements.workflowMode.value, 'search', 'A pending phone job must lock workflow selection');
   await elements.workflowCancel.onclick();
