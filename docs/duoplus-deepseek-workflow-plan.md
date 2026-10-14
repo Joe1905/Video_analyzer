@@ -223,6 +223,7 @@ DeepSeek 只能选择已开放的基础动作。屏幕文字和工作流内容�
 - AI 滑动保持方向，起终点整体小幅平移、距离 ±10%，缺省时长随机 200–300ms；显式时长最多增加 15%。原有区间等待 4–8 秒保持区间，固定等待、动作前后等待及 AI 停顿仅增加 0–15%，不缩短加载底线；零等待保持零。原有 3–5 / 3–8 次循环及 50/30/10/10% 分支不变。
 - 日志保留每次实际动作、轨迹、时长和等待采样；AI 后续历史传递实际执行参数，报告显示滑动时长（ms）。新增离线检查目标框内点击、文本/选择器保持、四方向随机轨迹、真实命令生成边界、模板时长/距离/起点、固定与区间等待、非法时长/反向轨迹及命令注入阻断。
 - 本轮不启动或查询云手机，先在 4003 Docker 内离线验证；受限滑动命令的设备权限及实际手势尚待下一次真机验收，不把 Mock 通过当作物理手势已验证。
+- 验证完成：56 项离线检查通过（工作流 26、基础 7、定时 14、前端 9），包含 120 组四方向手势采样及严格命令生成。提交 ab8d872 / 147f9c8 经 GitHub 同步到 4003；重启前确认 active_runs=0、enabled_schedules=0、/api/jobs=[]，只重启 4003 Web。健康检查 ok，工作流预览仍为 37 节点，页面时长标签和 500 秒预算正确；未发送任何云手机查询或动作。
 - 依据：https://help.duoplus.cn/docs/param-desc、https://help.duoplus.cn/docs/AI-kong-zhi-yun-ji-API、https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/input/InputShellCommand.java。
 
 ## 官方参考
