@@ -91,6 +91,8 @@ def database():
                 CREATE TABLE IF NOT EXISTS account_video_jobs (product_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS account_video_pages (
                     product_id TEXT PRIMARY KEY, cursor TEXT NOT NULL, has_more INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS video_library_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT NOT NULL UNIQUE);
                 CREATE TABLE IF NOT EXISTS shared_video_items (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_manual_orders (video_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS video_bitable_records (
@@ -124,11 +126,11 @@ def identifier(value):
 
 def product(product_id):
     if str(product_id).startswith("account:"):
-        identifier(product_id.removeprefix("account:"))
+        video_tables(product_id)
         for account in accounts():
             if account["product_id"] == product_id:
                 return account
-        raise ValueError("账号已从 IP 池移除，请刷新账号列表")
+        raise ValueError("账号已移除，请刷新账号列表")
     product_id = identifier(product_id)
     with database() as conn:
         row = conn.execute("SELECT * FROM tiktok_products WHERE product_id=?", (product_id,)).fetchone()
@@ -140,6 +142,7 @@ def product(product_id):
 def accounts():
     with database() as conn:
         records = conn.execute("SELECT id,username,display_name,feishu_user_name,status,profile_json FROM tiktok_accounts WHERE deleted_at='' ORDER BY id").fetchall()
+        manual = conn.execute("SELECT id,handle FROM video_library_accounts ORDER BY id").fetchall()
     result = []
     for row in records:
         profile = json.loads(row["profile_json"] or "{}")
@@ -147,16 +150,56 @@ def accounts():
             continue
         handle = row["username"].lstrip("@")
         result.append({"product_id": f"account:{row['id']}", "product_name": row["display_name"] or handle,
+                       "account_id": row["id"], "pool_linked": True,
                        "handle": handle, "price": "@" + handle, "stock": "", "status": row["status"],
                        "feishu_user_name": row["feishu_user_name"],
                        "product_url": "https://www.tiktok.com/@" + handle,
                        "image_url": f"/api/proxy/accounts/avatar/{row['id']}" if proxy_pool._account_avatar_path(row["id"]).is_file() else ""})
-    return result
+    manual_handles = {row["handle"] for row in manual}
+    merged = [account for account in result if account["handle"].casefold() not in manual_handles]
+    for row in manual:
+        handle = row["handle"]
+        matches = [account for account in result if account["handle"].casefold() == handle]
+        account = dict(matches[0]) if len(matches) == 1 else {
+            "product_name": handle, "handle": handle, "price": "@" + handle, "stock": "",
+            "status": "未加入账号池" if not matches else "账号池存在重名，请检查",
+            "account_id": None, "pool_linked": False, "feishu_user_name": "", "image_url": "",
+            "product_url": "https://www.tiktok.com/@" + handle,
+        }
+        # Keep the library ID and its saved videos/cursor when a pool account appears or disappears.
+        account["product_id"] = f"account:manual:{row['id']}"
+        merged.append(account)
+    return merged
+
+
+def add_account(payload):
+    value = str(payload.get("handle") or "").strip()
+    if value.lower().startswith(("tiktok.com/", "www.tiktok.com/")):
+        value = "https://" + value
+    if "://" in value:
+        parsed = urlparse(value)
+        if (parsed.scheme not in {"http", "https"} or parsed.hostname not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}
+                or parsed.username or parsed.password or not re.fullmatch(r"/@[^/]+/?", parsed.path)):
+            raise ValueError("请填写 TikTok 用户名或完整主页链接（https://www.tiktok.com/@用户名）")
+        value = parsed.path.rstrip("/").removeprefix("/@")
+    else:
+        value = value.removeprefix("@")
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,24}", value) or value.endswith("."):
+        raise ValueError("TikTok 用户名需为 1–24 位字母、数字、下划线或点，不能以点结尾；请勿填写昵称")
+    handle = value.casefold()
+    with _lock:
+        existing = [account for account in accounts() if account["handle"].casefold() == handle]
+        if existing:
+            return {"account": existing[0]}
+        with database() as conn:
+            conn.execute("INSERT OR IGNORE INTO video_library_accounts(handle) VALUES (?)", (handle,))
+        return {"account": next(account for account in accounts() if account["handle"].casefold() == handle)}
 
 
 def video_tables(pid):
     prefix = "account" if str(pid).startswith("account:") else "product"
-    identifier(str(pid).removeprefix("account:"))
+    value = str(pid).removeprefix("account:")
+    identifier(value.removeprefix("manual:") if prefix == "account" else value)
     return prefix + "_video_items", prefix + "_video_jobs"
 
 
@@ -734,14 +777,16 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint in {"jobs", "write-table", "orders", "collect-retention"}:
+        if handler.command == "POST" and endpoint in {"accounts", "jobs", "write-table", "orders", "collect-retention"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
             payload = json.loads(handler.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            if endpoint in {'orders', 'collect-retention'}:
+            if endpoint == "accounts":
+                reply(handler, 200, add_account(payload))
+            elif endpoint in {'orders', 'collect-retention'}:
                 from video_review_inputs import save_orders, start_collection
                 result = (save_orders if endpoint == 'orders' else start_collection)(sys.modules[__name__], payload)
                 reply(handler, 200 if endpoint == 'orders' else 202, result)

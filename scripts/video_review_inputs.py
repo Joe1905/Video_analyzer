@@ -37,19 +37,24 @@ def save_orders(workspace, payload):
 
 
 def collection_account(workspace, pid, video):
+    if str(pid).startswith('account:manual:'):
+        account_id = workspace.product(pid).get('account_id')
+        if not account_id:
+            raise ValueError('该账号尚未关联账号池，采集已禁用；账号池加入相同 TikTok 用户名后会自动关联，绑定 IP 后可采集')
+        return account_id
     if str(pid).startswith('account:'):
         return int(str(pid).split(':')[1])
     match = re.fullmatch(r'/@([^/]+)/video/' + re.escape(video['video_id']) + r'/?', urlparse(video.get('url') or '').path)
     accounts = workspace.accounts()
     if match:
-        owners = [a for a in accounts if a['handle'].casefold() == match[1].casefold()]
+        owners = [a for a in accounts if a.get('account_id') and a['handle'].casefold() == match[1].casefold()]
     else:
         with workspace.database() as conn:
             ids = {row[0] for row in conn.execute('SELECT product_id FROM account_video_items WHERE video_id=?', (video['video_id'],))}
-        owners = [a for a in accounts if a['product_id'] in ids]
+        owners = [a for a in accounts if a.get('account_id') and a['product_id'] in ids]
     if len(owners) != 1:
         raise ValueError('未能确定视频所属账号，请先将该账号加入账号池并绑定 IP')
-    return int(owners[0]['product_id'].split(':')[1])
+    return owners[0]['account_id']
 
 
 def input_state(workspace, pid, vid):
