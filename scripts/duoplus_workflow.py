@@ -270,7 +270,8 @@ def validate_decision(decision):
     if not isinstance(decision.get("observation"), str) or not decision["observation"].strip():
         raise ValueError("DeepSeek 没有提供当前画面证据。")
     recovery = decision.get("recovery")
-    if recovery is not None and (recovery not in {"tako", "unexpected_panel"} or decision["status"] != "action"):
+    if recovery is not None and (not isinstance(recovery, str) or recovery not in {"tako", "unexpected_panel"}
+                                 or decision["status"] != "action"):
         raise ValueError("异常恢复必须是允许的单步动作。")
     if decision["status"] != "action":
         return decision
@@ -279,7 +280,7 @@ def validate_decision(decision):
         raise ValueError("DeepSeek 动作或参数不在允许范围内。")
     duoplus.validate_steps([{"action": action, "params": params}])
     if recovery == "tako" and (action != "CLICK_COORDINATE" or not 0 <= params.get("x", -1) <= 200
-                               or not 0 <= params.get("y", -1) <= 200):
+                               or not 0 <= params.get("y", -1) <= 200 or "target_bounds" not in decision):
         raise ValueError("Tako 恢复只能点击可见的左上角返回键。")
     if recovery == "unexpected_panel" and action not in {"PAGE_BACK", "CLICK_COORDINATE", "CLICK_ELEMENT"}:
         raise ValueError("异常页面恢复只允许返回或关闭页面。")
@@ -369,7 +370,9 @@ def decide(task, screen, history, deadline, search_only=False):
         'GLOBAL RECOVERY POLICY applies before EVERY goal, including search, browsing and all interactions. '
         'When the CURRENT screenshot shows the TikTok Tako assistant page, ignore the normal goal for this step. '
         'Return status=action, recovery=tako and CLICK_COORDINATE on its clearly visible TOP-LEFT BACK ARROW, '
-        'using screenshot-relative coordinates with x and y between 0 and 200, and wait_after=1000. '
+        'choosing the arrow CENTER and including its visible target_bounds, with wait_after=1000. '
+        'Convert screenshot pixels to relative units: x=1000*pixel_x/image_width and y=1000*pixel_y/image_height; '
+        'convert target_bounds the same way. Both x and y must be between 0 and 200. '
         'Never guess a fixed coordinate or use PAGE_BACK for Tako; if its arrow is not visible return blocked. '
         'The runner captures a fresh screenshot after the return; only then resume the original goal. '
         'For other unrelated recoverable TikTok panels obscuring the target, return recovery=unexpected_panel '
