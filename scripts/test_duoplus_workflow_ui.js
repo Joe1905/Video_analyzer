@@ -60,6 +60,8 @@ async function main() {
   });
   await vm.runInContext(script, context);
   assert.equal(requests.length, 1); // Startup only uses the fake config.
+  assert.equal(elements.configView.hidden, false);
+  assert(elements.configStatus.textContent.includes('请先配置'));
 
   await elements.workflowSearch.onclick();
   const run = requests.find(item => item.url === '/api/duoplus/workflow/run');
