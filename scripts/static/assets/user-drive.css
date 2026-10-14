@@ -22,6 +22,7 @@
 .ud-body> :not(.ud-files){flex-shrink:0}.ud-dialog .ud-files{overflow:auto;min-height:0;flex:1;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:16px}
 .ud-table-head,.ud-file{grid-template-columns:minmax(0,1fr) 75px 110px 112px}.ud-dialog .ud-sort{border:1px solid var(--ud-line);border-radius:8px;background:#fff;padding:7px;color:var(--ud-ink);font:inherit;font-size:12px;max-width:125px}
 .ud-tools{flex-wrap:wrap;gap:10px}.ud-search{flex:1;min-width:150px}.ud-dialog .ud-icon-btn{width:36px;height:36px}.ud-dialog .ud-title{min-width:0}.ud-title p{overflow-wrap:anywhere}
+.ud-notice{max-height:96px;overflow:auto;overscroll-behavior:contain}
 .ud-embedded{position:static;width:100%;height:100%;max-height:100%;margin:0 auto;border-radius:16px;box-shadow:0 4px 24px #14233608;max-width:1200px}.ud-embedded .ud-head{padding-top:22px}.ud-embedded .ud-footer{margin-top:0}
 .ud-preview{width:min(900px,calc(100vw - 24px));max-height:calc(var(--app-height,100dvh) - 24px);padding:16px;border:1px solid #e3e7eb;border-radius:16px;background:#fff;color:#263548;overflow:auto}.ud-preview::backdrop{background:#182838b0;backdrop-filter:blur(5px)}.ud-preview-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}.ud-preview-head strong{flex:1;min-width:0;overflow-wrap:anywhere;font:600 14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}.ud-preview button{border:1px solid #e3e7eb;border-radius:8px;background:#fff;padding:8px 12px;white-space:nowrap;cursor:pointer}.ud-preview video{display:block;width:100%;max-height:calc(var(--app-height,100dvh) - 150px);background:#000}.ud-preview p{font-size:12px;color:#7a8695}
 @media(max-width:640px){
@@ -35,3 +36,4 @@
   .ud-empty{min-height:145px;padding:16px}.ud-empty-icon{width:42px;height:38px;margin-bottom:8px}.ud-empty-icon svg{width:24px;height:24px}.ud-empty p{margin-top:4px;line-height:1.5}
 }
 @media(max-height:600px){.ud-dialog .ud-title p,.ud-drop-copy p{display:none}.ud-dialog .ud-head{padding-top:10px;padding-bottom:10px}.ud-drop{margin-top:8px;padding:8px}.ud-tools{margin-top:8px;margin-bottom:8px}.ud-overview{padding-top:6px;padding-bottom:6px}.ud-dialog .ud-body{overflow:auto;overscroll-behavior:contain}.ud-dialog .ud-files{flex:none;min-height:145px;overflow:visible}}
+@media(max-width:360px){.ud-dialog .ud-overview{flex-direction:column;align-items:flex-start;gap:4px}.ud-retention{max-width:none}.ud-private{white-space:nowrap}}
