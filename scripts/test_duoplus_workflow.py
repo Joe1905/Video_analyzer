@@ -88,6 +88,17 @@ class WorkflowTest(unittest.TestCase):
             with self.subTest(decision=decision), self.assertRaises(ValueError):
                 workflow.validate_decision(decision)
 
+    def test_unsupported_loop_state_and_string_reversal_are_rejected(self):
+        candidate = copy.deepcopy(self.original)
+        node = next(n for n in candidate["nodes"] if n["type"] == "FOR_DATA")
+        node["data"]["reversal"] = "false"
+        with self.assertRaises(ValueError):
+            workflow.compile_workflow(candidate)
+        node["data"]["reversal"] = False
+        node["data"]["children"]["nodes"][-1]["data"]["loop_location_save_path"] = "unexpected"
+        with self.assertRaises(ValueError):
+            workflow.compile_workflow(candidate)
+
     def test_search_completion_requires_input_submit_and_result_click(self):
         runner = self.runner()
         with patch.object(runner, "observe"), patch.object(workflow, "decide", return_value=(self.decision(), {})):

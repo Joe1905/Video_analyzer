@@ -130,8 +130,12 @@ def compile_workflow(workflow):
                 interval(data, "fixed_time", "start_time", "end_time", 30000)
             if action == "FOR_TIMES":
                 interval(data, "fixed_value", "interval_min", "interval_max", 20)
+                if data.get("loop_location_save_path"):
+                    raise ValueError("暂不支持保存循环位置。")
             if action == "FOR_DATA" and (data.get("enter_bulk_text") != "Search-Contents" or data.get("loop_location_save_path")):
                 raise ValueError("仅支持 Search-Contents 主题列表，不支持保存循环位置。")
+            if action == "FOR_DATA" and type(data.get("reversal", False)) is not bool:
+                raise ValueError("主题逆序选项必须是布尔值。")
             if action == "TEXT_EXTRACTION" and (data.get("extraction_rule") != ".+" or data.get("use_variable") != "Search-Contents" or data.get("save_result") != "S-Content"):
                 raise ValueError("仅支持本模板的主题文本提取规则。")
             if action == "IF_CONDITION":
