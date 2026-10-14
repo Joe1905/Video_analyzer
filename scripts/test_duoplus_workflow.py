@@ -1,4 +1,5 @@
 """Offline contract tests. Network calls and phone actions are always mocked."""
+import base64
 import copy
 import io
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlparse
+from PIL import Image
 
 import duoplus
 import duoplus_workflow as workflow
@@ -172,6 +174,34 @@ class WorkflowTest(unittest.TestCase):
     def test_missing_screenshot_blocks_model_request(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), self.assertRaisesRegex(ValueError, "截图"):
             workflow.decide("goal", {}, [], time.monotonic() + 10)
+
+    def test_webp_screenshot_reaches_model_as_png(self):
+        source = io.BytesIO()
+        Image.new("RGB", (72, 128), "blue").save(source, format="WEBP")
+        shot = base64.b64encode(source.getvalue()).decode("ascii")
+        response = SimpleNamespace(ok=True, json=lambda: {"choices": [{"finish_reason": "stop",
+                                   "message": {"content": json.dumps(self.decision())}}]})
+        for value in (shot, "data:image/webp;base64," + shot):
+            with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), \
+                    patch("requests.Session.post", return_value=response) as post:
+                workflow.decide("goal", {"screenshot": value}, [], time.monotonic() + 10)
+                image_url = post.call_args.kwargs["json"]["messages"][1]["content"][1]["image_url"]["url"]
+                self.assertTrue(image_url.startswith("data:image/png;base64,"))
+                with Image.open(io.BytesIO(base64.b64decode(image_url.split(",", 1)[1]))) as image:
+                    self.assertEqual(image.size, (72, 128))
+        runner = self.runner()
+        with patch.object(duoplus, "submit", return_value={"screenshot": shot}):
+            runner.observe()
+        self.assertTrue(runner.screen["screenshot"].startswith("data:image/png;base64,"))
+        with Image.open(Path(self.directory.name) / "screen-001.png") as image:
+            self.assertEqual(image.format, "PNG")
+
+    def test_corrupt_webp_blocks_model_request(self):
+        shot = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPinvalid").decode("ascii")
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}), \
+                patch("requests.Session.post") as post, self.assertRaisesRegex(ValueError, "WebP"):
+            workflow.decide("goal", {"screenshot": shot}, [], time.monotonic() + 10)
+        post.assert_not_called()
 
     def test_worker_failure_releases_lock_and_writes_result(self):
         runner = self.runner(power_off=False)

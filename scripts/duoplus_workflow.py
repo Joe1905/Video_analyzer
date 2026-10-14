@@ -1,6 +1,7 @@
 """Bounded runner for the supplied DuoPlus TikTok workflow; cloud calls require Run."""
 import base64
 import copy
+import io
 import json
 import math
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import requests
+from PIL import Image
 import duoplus
 
 TEMPLATE = Path(__file__).parent / "workflows" / "duoplus_tiktok_topic.json"
@@ -238,11 +240,7 @@ def validate_decision(decision):
     return decision
 
 
-def decide(task, screen, history, deadline, search_only=False):
-    key = os.getenv("DEEPSEEK_API_KEY", "")
-    if not key:
-        raise ValueError("服务器未配置 DEEPSEEK_API_KEY。")
-    shot = screen.get("screenshot")
+def screenshot_payload(shot):
     if not isinstance(shot, str) or not shot:
         raise ValueError("当前屏幕没有截图，AI 节点已停止。")
     encoded = shot.split(",", 1)[-1] if shot.startswith("data:") else shot
@@ -250,9 +248,30 @@ def decide(task, screen, history, deadline, search_only=False):
         raw = base64.b64decode(encoded, validate=True)
     except ValueError as exc:
         raise ValueError("截图编码无效。") from exc
+    if len(raw) > 6 * 1024 * 1024:
+        raise ValueError("截图类型或大小无效。")
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        try:
+            with Image.open(io.BytesIO(raw)) as source:
+                if source.width * source.height > 16_000_000:
+                    raise ValueError("截图尺寸过大。")
+                target = io.BytesIO()
+                source.convert("RGB").save(target, format="PNG")
+                raw = target.getvalue()
+                encoded = base64.b64encode(raw).decode("ascii")
+        except (OSError, Image.DecompressionBombError) as exc:
+            raise ValueError("WebP 截图无法解码。") from exc
     if len(raw) > 6 * 1024 * 1024 or not (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n")):
         raise ValueError("截图类型或大小无效。")
     mime = "jpeg" if raw.startswith(b"\xff\xd8\xff") else "png"
+    return encoded, mime
+
+
+def decide(task, screen, history, deadline, search_only=False):
+    key = os.getenv("DEEPSEEK_API_KEY", "")
+    if not key:
+        raise ValueError("服务器未配置 DEEPSEEK_API_KEY。")
+    encoded, mime = screenshot_payload(screen.get("screenshot"))
     instruction = (
         'You control one Android TikTok phone. Return a strict JSON object. '
         'Schema: {"status":"action|done|blocked","observation":"visible screen facts",'
@@ -369,8 +388,10 @@ class Runner:
         self.shot_count += 1
         shot = screen.get("screenshot", "")
         if shot:
-            raw = base64.b64decode(shot.split(",", 1)[-1])
-            (self.directory / f"screen-{self.shot_count:03d}.png").write_bytes(raw)
+            encoded, mime = screenshot_payload(shot)
+            screen["screenshot"] = f"data:image/{mime};base64,{encoded}"
+            suffix = "jpg" if mime == "jpeg" else "png"
+            (self.directory / f"screen-{self.shot_count:03d}.{suffix}").write_bytes(base64.b64decode(encoded))
         with STATE_LOCK:
             self.job["screen"] = screen
         return screen
