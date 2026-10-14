@@ -28,9 +28,10 @@
   .ud-dialog{height:calc(var(--app-height,100dvh) - 16px);max-height:calc(var(--app-height,100dvh) - 16px)}
   .ud-dialog .ud-head{padding:14px}.ud-title p{font-size:11px}.ud-mark{width:38px;height:38px}
   .ud-dialog .ud-body{padding:0 14px}.ud-dialog .ud-overview{flex-direction:row;align-items:center;gap:8px;padding:9px}.ud-owner{max-width:135px}.ud-private{font-size:10px}.ud-retention{max-width:116px;font-size:10px}.ud-retention svg{display:none}
-  .ud-drop{margin-top:12px;padding:12px;gap:8px}.ud-drop-icon{display:none}.ud-drop-copy strong{font-size:12px}.ud-drop-copy p{max-width:145px;font-size:10px}.ud-drop .ud-btn{margin-left:0;padding:9px 11px}
+  .ud-drop{margin-top:12px;padding:12px;gap:8px}.ud-drop-icon{display:none}.ud-drop-copy strong{font-size:12px}.ud-drop-copy p{font-size:10px}.ud-drop .ud-btn{margin-left:0;padding:9px 11px}
   .ud-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;margin:14px 0 10px;gap:8px}.ud-tabs{gap:0}.ud-dialog .ud-tab{padding:7px 6px;font-size:12px}.ud-search{min-width:0;grid-column:1;grid-row:2}.ud-dialog .ud-sort{grid-column:2;grid-row:2;max-width:114px}.ud-tools>[data-refresh]{grid-column:2;grid-row:1;justify-self:end}
   .ud-table-head,.ud-file{grid-template-columns:minmax(0,1fr) 108px;gap:6px}.ud-file{padding:12px 0}.ud-file-actions{gap:0}.ud-file-name{font-size:13px}.ud-expiry{font-size:10px}.ud-expiry small{margin-left:3px}.ud-file-sub{font-size:10px}
   .ud-dialog .ud-footer{padding:10px 14px;margin-top:0}.ud-footer-note{max-width:60%}.ud-dialog.ud-embedded{height:100%;max-height:100%;border:0;border-radius:0}.ud-embedded .ud-footer-note{max-width:100%}
+  .ud-empty{min-height:145px;padding:16px}.ud-empty-icon{width:42px;height:38px;margin-bottom:8px}.ud-empty-icon svg{width:24px;height:24px}.ud-empty p{margin-top:4px;line-height:1.5}
 }
-@media(max-height:600px){.ud-dialog .ud-title p,.ud-drop-copy p{display:none}.ud-dialog .ud-head{padding-top:10px;padding-bottom:10px}.ud-drop{margin-top:8px;padding:8px}.ud-tools{margin-top:8px;margin-bottom:8px}.ud-overview{padding-top:6px;padding-bottom:6px}}
+@media(max-height:600px){.ud-dialog .ud-title p,.ud-drop-copy p{display:none}.ud-dialog .ud-head{padding-top:10px;padding-bottom:10px}.ud-drop{margin-top:8px;padding:8px}.ud-tools{margin-top:8px;margin-bottom:8px}.ud-overview{padding-top:6px;padding-bottom:6px}.ud-dialog .ud-body{overflow:auto;overscroll-behavior:contain}.ud-dialog .ud-files{flex:none;min-height:145px;overflow:visible}}
