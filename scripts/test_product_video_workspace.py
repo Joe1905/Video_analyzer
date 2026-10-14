@@ -331,7 +331,8 @@ def browser_checks():
                 assert page.locator('.video-card').count() == 2
                 assert page.locator('#videoSort').input_value() == 'published_at'
                 assert page.locator('#products .row-id').first.inner_text() == '测试同事'
-                assert not page.locator('#addProduct').is_visible()
+                assert page.locator('#addProduct').is_visible()
+                assert page.locator('#addProduct').get_attribute('aria-label') == '手动添加账号'
                 assert 'credit' not in page.locator('body').inner_text()
                 page.locator('#productsTab').click()
                 page.wait_for_function("document.querySelector('#selectedName').textContent === 'Renamed product'")
