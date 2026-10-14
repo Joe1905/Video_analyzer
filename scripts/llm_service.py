@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -46,6 +47,21 @@ class Service:
                 "asr": {"backend": "openai-whisper", "model": self.model_name,
                         "device": "cpu", "cached": (self.cache / f"{self.model_name}.pt").is_file(),
                         "loaded": self.model is not None, "max_seconds": 120}}
+
+    def tls_context(self):
+        cert, key = self.directory / "server.crt", self.directory / "server.key"
+        if not cert.exists() and not key.exists():
+            host = os.getenv("LLM_BIND_HOST", "127.0.0.1")
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(key), "-out", str(cert), "-days", "365", "-subj", "/CN=LAN-LLM",
+                "-addext", "subjectAltName=IP:" + host + ",IP:127.0.0.1,DNS:localhost",
+                "-addext", "basicConstraints=critical,CA:TRUE"],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+            os.chmod(key, 0o600)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(cert, key)
+        return context
 
     def text_request(self, body):
         if not isinstance(body, dict):
@@ -237,7 +253,8 @@ def main():
     server = ThreadingHTTPServer((os.getenv("LLM_BIND_HOST", "127.0.0.1"),
                                  int(os.getenv("LLM_PORT", "4010"))), Handler)
     server.service = service
-    print("LAN text/ASR API listening; token stored in llm-service/api-token", flush=True)
+    server.socket = service.tls_context().wrap_socket(server.socket, server_side=True)
+    print("LAN HTTPS text/ASR API listening; token stored in llm-service/api-token", flush=True)
     server.serve_forever()
 
 
