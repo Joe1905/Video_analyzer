@@ -611,7 +611,7 @@ def prepare(body, default_image_id="", require_key=False):
     if any(not isinstance(value, str) or not value.strip() or len(value) > 100 for value in (card_key, name)):
         raise ValueError("工作流标识或名称无效（最多 100 字）。")
     job = {"id": uuid.uuid4().hex, "status": "queued", "mode": mode, "topics": topics,
-           "image_id": image_id.strip(), "budget_seconds": integer(body.get("budget_seconds", 300), 30, 420),
+           "image_id": image_id.strip(), "budget_seconds": integer(body.get("budget_seconds", 500), 30, 500),
            "ai_max_steps": integer(body.get("ai_max_steps", 16), 1, 24),
            "auto_power_off": body.get("auto_power_off", True), "auto_power_on": body.get("auto_power_on", False),
            "card_key": card_key, "name": name, "started_at": time.time(), "logs": [], "screen": {}, "error": "",

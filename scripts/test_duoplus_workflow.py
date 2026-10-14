@@ -243,9 +243,15 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(responses[0][1]["preview"]["node_count"], 37)
             request.assert_not_called()
 
+    def test_budget_default_and_limit_preserve_explicit_shorter_budgets(self):
+        for supplied, expected in (({}, 500), ({"budget_seconds": 500}, 500), ({"budget_seconds": 300}, 300)):
+            with self.subTest(supplied=supplied):
+                _, _, job = workflow.prepare({"topics": "AI translator", **supplied}, "phone-1")
+                self.assertEqual(job["budget_seconds"], expected)
+
     def test_invalid_run_options_rejected_before_lock_or_cloud(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "offline"}):
-            for body in ({"topics": "one\ntwo"}, {"topics": "AI translator", "budget_seconds": 421},
+            for body in ({"topics": "one\ntwo"}, {"topics": "AI translator", "budget_seconds": 501},
                          {"topics": "AI translator", "ai_max_steps": 0},
                          {"topics": "AI translator", "workflow": {}},
                          {"topics": "AI translator", "auto_power_off": "true"}):

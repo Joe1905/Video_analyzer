@@ -23,7 +23,9 @@ async function main() {
     assert(!elements[match[1]], 'HTML IDs must be unique');
     elements[match[1]] = element();
   }
-  Object.assign(elements.workflowBudget, {value: '300'});
+  const budgetInput = html.match(/<input id="workflowBudget"[^>]+>/)[0];
+  assert(budgetInput.includes('max="500"'));
+  Object.assign(elements.workflowBudget, {value: budgetInput.match(/value="(\d+)"/)[1]});
   Object.assign(elements.workflowSteps, {value: '16'});
   Object.assign(elements.workflowTopics, {value: 'AI translator'});
   Object.assign(elements.workflowMode, {value: 'search'});
@@ -66,7 +68,7 @@ async function main() {
       } else if (url === '/api/duoplus/workflow/preview') {
         data = preview;
       } else if (url === '/api/duoplus/workflow/run') {
-        data = {id: 'offline-job-' + ++runs, status: 'queued', budget_seconds: 300};
+        data = {id: 'offline-job-' + ++runs, status: 'queued', budget_seconds: 500};
       } else if (url.startsWith('/api/duoplus/workflow/job?id=')) {
         const reportId = url.split('id=')[1];
         if (reportDetails[reportId]) {
@@ -77,7 +79,7 @@ async function main() {
         const id = url.split('id=')[1];
         const status = cancelled.has(id) ? 'cancelled' : (polls[id]++ ? 'complete' : 'running');
         if (!Number.isFinite(polls[id])) polls[id] = 1;
-        data = {id, status, screen: {}, logs: [], budget_seconds: 300,
+        data = {id, status, screen: {}, logs: [], budget_seconds: 500,
           auto_power_off: true, power_off_requested: true, error: cancelled.has(id) ? '用户已停止工作流。' : ''};
       } else if (url === '/api/duoplus/workflow/cancel') {
         cancelled.add(body.id);
@@ -121,7 +123,7 @@ async function main() {
   const run = requests.find(item => item.url === '/api/duoplus/workflow/run');
   assert.equal(run.body.mode, 'search');
   assert.equal(run.body.topics, 'AI translator');
-  assert.equal(run.body.budget_seconds, 300);
+  assert.equal(run.body.budget_seconds, 500);
   assert.equal(run.body.auto_power_off, true);
   assert(elements.workflowCancel.disabled);
   assert(elements.status.textContent.includes('工作流完成'));
