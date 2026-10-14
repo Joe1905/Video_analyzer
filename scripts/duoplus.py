@@ -18,6 +18,12 @@ ACTIONS = {
 }
 
 
+class ActionFailure(ValueError):
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.details = details
+
+
 def load_config(data_dir):
     path = data_dir / "duoplus.json"
     config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -110,7 +116,11 @@ def submit(config, phone, action=None, params=None, deadline=None):
         "task_id": task_id, "action": kind, "payload": payload}, phone, deadline=deadline)
     result = json.loads(outer.get("result_json", "{}"))
     if outer.get("state") != "SUCCEEDED" or result.get("success") is not True:
-        raise ValueError("云手机动作未成功，请刷新屏幕确认状态后再操作。")
+        message = str(result.get("message") or outer.get("message") or "未返回失败原因。")
+        if config.get("api_key"):
+            message = message.replace(config["api_key"], "[已隐藏]")
+        details = {"gateway_state": outer.get("state"), "message": message[:300]}
+        raise ActionFailure("云手机动作未成功：" + message[:300] + "；未自动重试。", details)
     return result
 
 

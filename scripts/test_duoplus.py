@@ -61,6 +61,13 @@ class DuoPlusTest(unittest.TestCase):
                 duoplus.submit({}, {})
 
     def test_failure_stops_sequence_without_retry(self):
+        with patch.object(duoplus, "request", return_value={"state": "FAILED",
+                          "result_json": '{"success":false,"message":"Unsupported action test-secret"}'}):
+            with self.assertRaises(duoplus.ActionFailure) as failure:
+                duoplus.submit({"api_key": "test-secret"}, {}, "PAGE_BACK")
+            self.assertEqual(failure.exception.details["gateway_state"], "FAILED")
+            self.assertIn("Unsupported action", str(failure.exception))
+            self.assertNotIn("test-secret", str(failure.exception))
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(duoplus, "get_phone", return_value={}), patch.object(duoplus, "submit", side_effect=[
                 {"success": True}, {"success": True}, {"success": True}, ValueError("failed")]) as submit:

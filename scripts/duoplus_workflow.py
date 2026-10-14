@@ -537,6 +537,9 @@ class Runner:
         limit = min(integer(node["data"].get("max_steps", 16), 1, 500), self.job["ai_max_steps"])
         for step in range(limit + 1):
             self.check()
+            self.log("ai_start", node_id=node["id"], step=step + 1, message="请求 DeepSeek 判断",
+                     evidence=self.job.get("last_screen"))
+            self.check()
             decision, usage = decide(task, self.screen, history, self.deadline, self.job["mode"] == "search")
             self.check()
             self.log("ai", node_id=node["id"], step=step + 1, decision=decision, **usage)
@@ -698,6 +701,7 @@ class Runner:
             self.job.update(error_type=type(exc).__name__, failed_node=self.job.get("current_node"),
                             failed_action=copy.deepcopy(self.job.get("active_action")))
             self.log("error", message=error, error_type=type(exc).__name__,
+                     gateway_detail=getattr(exc, "details", None),
                      failed_action=self.job.get("failed_action"), evidence=self.job.get("last_screen"))
         finally:
             self.job["stage"] = "cleanup"
