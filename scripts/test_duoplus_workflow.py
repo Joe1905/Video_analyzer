@@ -123,6 +123,50 @@ class WorkflowTest(unittest.TestCase):
                 runner.ai(self.search_node(), {"S-Content": "AI translator"})
             action.assert_not_called()
 
+    def test_tako_recovery_precedes_search_and_reobserves_before_resuming(self):
+        runner = self.runner()
+        recovery = {**self.decision("CLICK_COORDINATE", {"x": 45, "y": 65, "wait_after": 1000}),
+                    "recovery": "tako", "observation": "Tako assistant with a visible top-left back arrow"}
+        decisions = [recovery, self.decision("INPUT_CONTENT", {"content": "AI translator"}),
+                     self.decision("KEYBOARD_OPERATION", {"key": "enter"}),
+                     self.decision("CLICK_COORDINATE", {"x": 300, "y": 400}), self.decision()]
+        with patch.object(runner, "observe") as observe, patch.object(duoplus, "submit") as submit, \
+                patch.object(workflow, "decide", side_effect=[(item, {}) for item in decisions]) as decide:
+            runner.ai(self.search_node(), {"S-Content": "AI translator"})
+        self.assertEqual(observe.call_count, 5)  # Initial capture and one fresh capture per action.
+        self.assertEqual(submit.call_args_list[0].args[2], "CLICK_COORDINATE")
+        self.assertEqual(submit.call_args_list[0].args[3]["x"], 45)
+        self.assertEqual(decide.call_args_list[1].args[2][0]["recovery"], "tako")
+        self.assertEqual(sum(log["kind"] == "recovery" for log in runner.job["logs"]), 1)
+
+    def test_global_recovery_limit_applies_to_every_ai_node(self):
+        graph = workflow.compile_workflow(self.original)
+        nodes = [node for node in workflow.flatten(graph) if node["data"]["action"] == "AI_OPERATION"]
+        for node in nodes:
+            with self.subTest(node=node["id"]):
+                runner = self.runner(mode="full")
+                recovery = {**self.decision("CLICK_COORDINATE", {"x": 45, "y": 65}), "recovery": "tako"}
+                with patch.object(runner, "observe"), patch.object(runner, "action") as action, \
+                        patch.object(workflow, "decide", return_value=(recovery, {})):
+                    with self.assertRaisesRegex(ValueError, "3 次上限"):
+                        runner.ai(node, {"S-Content": "AI translator"})
+                self.assertEqual(action.call_count, 3)
+
+    def test_recovery_rejects_non_return_actions_and_other_apps(self):
+        for decision in ({**self.decision("PAGE_BACK"), "recovery": "tako"},
+                         {**self.decision("CLICK_COORDINATE", {"x": 900, "y": 600}), "recovery": "tako"},
+                         {**self.decision("INPUT_CONTENT", {"content": "hello"}), "recovery": "unexpected_panel"},
+                         {**self.decision(), "recovery": "tako"}):
+            with self.assertRaises(ValueError):
+                workflow.validate_decision(decision)
+        runner = self.runner(mode="full")
+        runner.screen["current_app"] = "other.app"
+        recovery = {**self.decision("CLICK_COORDINATE", {"x": 45, "y": 65}), "recovery": "tako"}
+        with patch.object(runner, "observe"), patch.object(runner, "action") as action, \
+                patch.object(workflow, "decide", return_value=(recovery, {})), self.assertRaisesRegex(ValueError, "不在 TikTok"):
+            runner.ai(self.search_node(), {"S-Content": "AI translator"})
+        action.assert_not_called()
+
     def test_search_mode_stops_before_interaction_loops(self):
         runner = self.runner()
         with patch.object(runner, "wait"), patch.object(runner, "observe"), patch.object(runner, "action"), \
@@ -296,6 +340,9 @@ class WorkflowTest(unittest.TestCase):
                 self.assertIn("model_elapsed_seconds", usage)
                 self.assertNotIn("elapsed_seconds", usage)
                 image_url = post.call_args.kwargs["json"]["messages"][1]["content"][1]["image_url"]["url"]
+                instruction = post.call_args.kwargs["json"]["messages"][0]["content"]
+                self.assertIn("GLOBAL RECOVERY POLICY", instruction)
+                self.assertIn("TOP-LEFT BACK ARROW", instruction)
                 self.assertTrue(image_url.startswith("data:image/png;base64,"))
                 with Image.open(io.BytesIO(base64.b64decode(image_url.split(",", 1)[1]))) as image:
                     self.assertEqual(image.size, (72, 128))
