@@ -30,7 +30,7 @@ def public_config(config):
             "region": config["region"]}
 
 
-def request(config, path, payload, phone=None):
+def request(config, path, payload, phone=None, deadline=None):
     if not config["api_key"]:
         raise ValueError("请先保存 DuoPlus API Key。")
     headers = {"Content-Type": "application/json", "Lang": "zh"}
@@ -46,10 +46,17 @@ def request(config, path, payload, phone=None):
     if delay > 0:
         time.sleep(delay)
     LAST_CALL[path] = time.monotonic()
+    remaining = deadline - time.monotonic() if deadline is not None else None
+    if remaining is not None and remaining <= 0:
+        raise ValueError("工作流已达到时间上限。")
+    read_timeout = 310 if phone else 30
+    if remaining is not None:
+        read_timeout = min(read_timeout, max(0.1, remaining / 2))
+    connect_timeout = min(10, read_timeout)
     with requests.Session() as session:
         session.trust_env = False
         response = session.post("https://" + host + path, headers=headers,
-                                json=payload, timeout=(10, 310 if phone else 30))
+                                json=payload, timeout=(connect_timeout, read_timeout))
     if response.status_code == 401:
         raise ValueError("DuoPlus 鉴权失败，请检查 API Key 和设备 HTTP 服务配置。")
     if not response.ok:
@@ -62,37 +69,37 @@ def request(config, path, payload, phone=None):
     return result
 
 
-def list_phones(config, image_id=""):
+def list_phones(config, image_id="", deadline=None):
     rows = []
     page = 1
     while True:
         payload = {"page": page, "pagesize": 100}
         if image_id:
             payload["image_id"] = [image_id]
-        data = request(config, "/api/v1/cloudPhone/list", payload)["data"]
+        data = request(config, "/api/v1/cloudPhone/list", payload, deadline=deadline)["data"]
         rows.extend(data.get("list", []))
         if page >= int(data.get("total_page", 1)):
             return rows
         page += 1
 
 
-def get_phone(config, image_id):
+def get_phone(config, image_id, deadline=None):
     if not isinstance(image_id, str) or not image_id.strip():
         raise ValueError("请先选择云手机。")
-    phone = next((row for row in list_phones(config, image_id) if row.get("id") == image_id), None)
+    phone = next((row for row in list_phones(config, image_id, deadline) if row.get("id") == image_id), None)
     if not phone:
         raise ValueError("未找到指定云手机。")
     if str(phone.get("status")) != "1" or str(phone.get("http_status")) != "1":
         raise ValueError("云手机需已开机并开启 HTTP 服务；请在 DuoPlus 控制台检查。")
     if not phone.get("ip") or not phone.get("region"):
         raise ValueError("云手机缺少 IP 或区域信息。")
-    ready = request(config, "/agent-command", {"operation": "ready"}, phone)
+    ready = request(config, "/agent-command", {"operation": "ready"}, phone, deadline=deadline)
     if ready.get("executor") != "ready" and ready.get("ready") is not True:
         raise ValueError("云手机执行器尚未就绪，请稍后刷新。")
     return phone
 
 
-def submit(config, phone, action=None, params=None):
+def submit(config, phone, action=None, params=None, deadline=None):
     task_id = uuid.uuid4().hex
     kind = "execute" if action else "get_ui_state"
     payload = {"task_type": "ai", "task_id": task_id, "action": kind, "lang": "zh"}
@@ -100,7 +107,7 @@ def submit(config, phone, action=None, params=None):
         payload.update(action_name=action, params=params or {})
     outer = request(config, "/agent-command", {
         "operation": "submit", "command_id": uuid.uuid4().hex,
-        "task_id": task_id, "action": kind, "payload": payload}, phone)
+        "task_id": task_id, "action": kind, "payload": payload}, phone, deadline=deadline)
     result = json.loads(outer.get("result_json", "{}"))
     if outer.get("state") != "SUCCEEDED" or result.get("success") is not True:
         raise ValueError("云手机动作未成功，请刷新屏幕确认状态后再操作。")
@@ -133,6 +140,9 @@ def handle(handler, parsed, data_dir, respond):
     if not virphone.allowed_request(handler, write=handler.command != "GET"):
         respond(handler, 403, {"error": "仅允许可信的 4003 局域网页面操作。"})
         return True
+    if parsed.path.startswith("/api/duoplus/workflow"):
+        import duoplus_workflow
+        return duoplus_workflow.handle(handler, parsed, data_dir, respond)
     if not LOCK.acquire(blocking=False):
         respond(handler, 409, {"error": "云手机操作正在执行，请等待完成。"})
         return True
