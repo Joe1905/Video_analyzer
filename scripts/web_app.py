@@ -14359,7 +14359,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/remote-browser":
             prefix = f"proxy/observation/{remote_browser_port}"
-            channel = f"/{prefix}/vnc.html?autoconnect=1&resize=scale&path={prefix}/websockify"
+            channel = f"/{prefix}/vnc.html?autoconnect=1&resize=scale&path=/{prefix}/websockify"
             page = (SCRIPTS_DIR / "static" / "remote_browser.html").read_text(encoding="utf-8")
             page = page.replace("__REMOTE_BROWSER_CHANNEL__", channel)
             return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
