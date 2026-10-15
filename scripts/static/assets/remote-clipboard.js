@@ -122,6 +122,7 @@
   async function remoteCopy(action) {
     if (copyPending) return;
     copyPending = true;
+    report('正在取回远程剪贴板…');
     try { await receive(true, action); } catch (error) { report(error.message); }
     finally { copyPending = false; }
   }
@@ -174,6 +175,13 @@
 
   frame.addEventListener('load', attach);
   if (frame.contentDocument?.readyState === 'complete') attach();
+  // Some embedded browsers dispatch native Copy/Cut on the outer document.
+  for (const action of ['copy', 'cut']) document.addEventListener(action, event => {
+    if (document.activeElement !== frame || dialog.open) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    remoteCopy(action);
+  }, true);
   document.getElementById('clipboard').onclick = () => { explain(); dialog.showModal(); text.focus(); };
   document.getElementById('clipboard-close').onclick = () => { dialog.close(); focusRemote(); };
   text.addEventListener('input', () => { show(new Blob([text.value], {type:'text/plain;charset=utf-8'})); });
