@@ -3,6 +3,7 @@
   const dialog = document.getElementById('clipboard-dialog');
   const text = document.getElementById('clipboard-text');
   const image = document.getElementById('clipboard-image');
+  const download = document.getElementById('clipboard-download');
   const status = document.getElementById('clip-status');
   const help = document.getElementById('clipboard-help');
   const api = '/api/remote-browser/clipboard';
@@ -14,7 +15,7 @@
   const explain = () => {
     help.textContent = window.isSecureContext
       ? '远程 → 本机：取回远程剪贴板，再点“复制到本机”。'
-      : '远程 → 本机：取回后，文字点“复制到本机”再按 Ctrl+C；图片在预览上右键选择“复制图片”。当前为 HTTP 地址，HTTPS 支持直接写入本机剪贴板。';
+      : '远程 → 本机：取回后，文字点“复制到本机”再按 Ctrl+C；图片在预览上右键选择“复制图片”。内嵌浏览器没有该菜单时可下载图片。当前为 HTTP 地址，HTTPS 支持直接写入本机剪贴板。';
   };
   const focusRemote = () => frame.contentDocument?.querySelector('#noVNC_container canvas')?.focus({preventScroll:true});
 
@@ -23,12 +24,15 @@
     if (imageUrl) URL.revokeObjectURL(imageUrl);
     imageUrl = '';
     image.hidden = !blob.type.startsWith('image/');
+    download.hidden = image.hidden;
     if (!image.hidden) {
       text.value = '';
       imageUrl = URL.createObjectURL(blob);
       image.src = imageUrl;
+      download.href = imageUrl;
     } else {
       image.removeAttribute('src');
+      download.removeAttribute('href');
     }
   }
 
