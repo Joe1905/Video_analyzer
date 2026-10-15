@@ -189,6 +189,7 @@ from proxy_state import ensure_us_proxy
 import instagram_content_collect
 import proxy_pool
 import observation_proxy
+import remote_clipboard
 import product_video_workspace
 import tiktok_studio_publish
 import tiktok_studio_collect
@@ -14368,6 +14369,8 @@ class Handler(BaseHTTPRequestHandler):
             page = (SCRIPTS_DIR / "static" / "duoplus.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
         remote_browser_port = int(os.getenv("WEB_PORT", "4002")) + 12000
+        if remote_clipboard.forward(self):
+            return
         if observation_proxy.handle(self, [*proxy_pool.novnc_port_plan()["allowed_ports"], remote_browser_port]):
             return
         if parsed.path == "/remote-browser":
@@ -15068,6 +15071,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if remote_clipboard.forward(self):
+            return
         if duoplus.handle(self, parsed, DATA_DIR, json_response):
             return
         if parsed.path == "/api/virphone/power":

@@ -1,7 +1,15 @@
 # Optional service: use together with docker-compose.yml, always with -p.
 services:
   remote-browser:
-    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
+    image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}-remote-browser
+    build:
+      context: .
+      dockerfile: Dockerfile.remote-browser
+      network: host
+      args:
+        BASE_IMAGE: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
+        HTTP_PROXY: http://127.0.0.1:7890
+        HTTPS_PROXY: http://127.0.0.1:7890
     command: python scripts/remote_browser.py
     init: true
     # Match the existing account browsers: Chrome's namespace sandbox needs this.

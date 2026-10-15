@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=short-video-analyzer:latest
+FROM ${BASE_IMAGE}
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 update \
+    && apt-get install -y --no-install-recommends xclip \
+    && rm -rf /var/lib/apt/lists/*

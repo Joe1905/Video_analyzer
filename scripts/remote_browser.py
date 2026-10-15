@@ -95,8 +95,11 @@ def main():
                 "https://www.google.com/"], env=env, user=10001, group=10001,
                extra_groups=[])
         launch(["x11vnc", "-display", display, "-rfbport", str(vnc_port),
-                "-localhost", "-forever", "-shared", "-nopw", "-quiet"])
+                "-localhost", "-forever", "-shared", "-nopw", "-quiet", "-nosel"])
         wait_port(vnc_port, processes)
+        launch(["python", "scripts/remote_clipboard.py"], env=env, user=10001,
+               group=10001, extra_groups=[])
+        wait_port(site_port + 17000, processes)
         launch(["websockify", "--web", "/usr/share/novnc",
                 f"127.0.0.1:{web_port}", f"127.0.0.1:{vnc_port}"])
         wait_port(web_port, processes)

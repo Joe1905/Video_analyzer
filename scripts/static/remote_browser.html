@@ -7,17 +7,31 @@
 <style>
 *{box-sizing:border-box}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;background:#f8fafc;color:#1e293b;font:14px system-ui,"Microsoft YaHei",sans-serif}header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 20px;background:#fff;border-bottom:1px solid #e2e8f0}h1{font-size:18px;margin:0}p{margin:0;color:#64748b}.actions{display:flex;gap:8px;margin-left:auto}button,a.action{font:inherit;color:#334155;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;text-decoration:none;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}main{flex:1;min-height:0}iframe{display:block;width:100%;height:100%;border:0}@media(max-width:700px){header{padding:10px;gap:10px}.actions{margin-left:0}p{font-size:12px}}
 </style>
+<style>
+#clip-status{margin:0;padding:5px 20px;color:#475569;font-size:12px;background:#f1f5f9}dialog{width:min(600px,calc(100vw - 24px));border:1px solid #cbd5e1;border-radius:12px;padding:20px;color:#1e293b}dialog::backdrop{background:#0f172a88}dialog h2{margin:0 0 12px;font-size:18px}dialog p{line-height:1.6;margin:10px 0}dialog textarea{display:block;width:100%;height:120px;margin:12px 0;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:inherit}dialog img{display:block;max-width:100%;max-height:260px;object-fit:contain;margin:12px auto}dialog img[hidden]{display:none}.clip-buttons{display:flex;gap:8px;flex-wrap:wrap}.standalone>.app-nav{display:none}
+</style>
 </head>
 <body>
-<header><h1>远程浏览器</h1><p>Hysteria2 固定线路 · 登录状态自动保留</p><div class="actions"><button id="reconnect" type="button">重新连接</button><a class="action" id="standalone" target="_blank" rel="noopener">独立窗口</a></div></header>
+<header><h1>远程浏览器</h1><p>Hysteria2 固定线路 · 登录状态自动保留</p><div class="actions"><button id="clipboard" type="button">剪贴板</button><button id="reconnect" type="button">重新连接</button><a class="action" id="standalone" target="_blank" rel="noopener">独立窗口</a></div></header>
 <nav class="app-nav"></nav>
+<p id="clip-status" role="status">在远程画面按 Ctrl+V，可粘贴本机文字或图片</p>
 <main><iframe id="browser" title="服务器上的独立浏览器" allow="clipboard-read; clipboard-write; fullscreen"></iframe></main>
+<dialog id="clipboard-dialog" aria-labelledby="clipboard-title">
+<h2 id="clipboard-title">文字与图片剪贴板</h2>
+<p>本机 → 远程：在下方粘贴文字或图片，再点“发送到远程”。也可以直接在远程画面按 Ctrl+V。</p>
+<textarea id="clipboard-text" aria-label="剪贴板内容" placeholder="在此按 Ctrl+V，可粘贴文字或图片"></textarea>
+<img id="clipboard-image" alt="剪贴板图片预览" hidden>
+<p id="clipboard-help"></p>
+<div class="clip-buttons"><button id="clipboard-send" type="button">发送到远程</button><button id="clipboard-fetch" type="button">取回远程剪贴板</button><button id="clipboard-copy" type="button">复制到本机</button><button id="clipboard-close" type="button">关闭</button></div>
+</dialog>
 <script>
 const channel = '__REMOTE_BROWSER_CHANNEL__';
 const frame = document.getElementById('browser');
 frame.src = channel;
-document.getElementById('standalone').href = channel;
+document.getElementById('standalone').href = '/remote-browser?standalone=1';
+if (new URLSearchParams(location.search).has('standalone')) document.body.classList.add('standalone');
 document.getElementById('reconnect').onclick = () => { frame.src = channel; };
 </script>
+<script src="/assets/remote-clipboard.js?v=20261015-1"></script>
 </body>
 </html>
