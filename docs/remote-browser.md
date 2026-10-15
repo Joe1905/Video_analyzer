@@ -36,6 +36,12 @@ WEB_PORT 必须与对应站点一致。内部端口分别为 WEB_PORT + 12000（
 剪贴板服务只监听本机，以浏览器用户运行；不落盘、不记录内容日志，
 API 要求同源自定义请求头，不向容器转发站点认证信息。
 
+无域名时，Windows 可以运行 `scripts/open_remote_browser.ps1` 建立仅监听本机的
+SSH 隧道，再打开 `http://127.0.0.1:4402/remote-browser`。浏览器将回环地址视作可信来源，
+支持文字和图片的直接剪贴板 API；不需要忽略证书警告或降低安全设置。
+此地址仅适用于运行隧道的电脑；电脑重启或隧道断开后重新运行脚本即可。
+左侧 noVNC 剪贴板图标与顶部“剪贴板”均打开新的文字/图片面板。
+
 检查：`python scripts/test_remote_browser.py`、`python scripts/test_observation_proxy.py`
 均在对应环境的 Compose 容器内运行；另验证页面、noVNC 连接和浏览器实际出口。
 停止或回滚只操作对应环境的 remote-browser 服务，保留用户目录。

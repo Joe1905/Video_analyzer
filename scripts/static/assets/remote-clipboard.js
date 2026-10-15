@@ -121,6 +121,14 @@
     sink.tabIndex = -1;
     sink.style.cssText = 'position:fixed;left:-10000px;top:0';
     doc.body.append(sink);
+    doc.addEventListener('click', event => {
+      if (!event.target.closest('#noVNC_clipboard_button')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      explain();
+      dialog.showModal();
+      text.focus();
+    }, true);
     doc.addEventListener('keydown', event => {
       if (!(event.ctrlKey || event.metaKey)) return;
       const key = event.key.toLowerCase();
