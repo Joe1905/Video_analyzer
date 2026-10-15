@@ -77,9 +77,17 @@
     (dialog.open ? dialog : document.body).append(field);
     field.focus();
     field.select();
-    const ok = document.execCommand('copy');
-    field.remove();
-    return ok;
+    const onCopy = event => {
+      event.clipboardData.setData('text/plain', value);
+      event.preventDefault();
+    };
+    document.addEventListener('copy', onCopy, true);
+    try {
+      return document.execCommand('copy');
+    } finally {
+      document.removeEventListener('copy', onCopy, true);
+      field.remove();
+    }
   }
 
   async function copyLocal(blob) {
