@@ -74,7 +74,8 @@
     const field = document.createElement('textarea');
     field.value = value;
     field.style.cssText = 'position:fixed;left:-10000px;top:0';
-    document.body.append(field);
+    (dialog.open ? dialog : document.body).append(field);
+    field.focus();
     field.select();
     const ok = document.execCommand('copy');
     field.remove();
@@ -85,7 +86,8 @@
     if (navigator.clipboard?.write && window.ClipboardItem) {
       try {
         const mime = blob.type.startsWith('image/') ? 'image/png' : 'text/plain';
-        await navigator.clipboard.write([new ClipboardItem({[mime]:blob})]);
+        const content = mime === 'text/plain' ? new Blob([await blob.text()], {type:mime}) : blob;
+        await navigator.clipboard.write([new ClipboardItem({[mime]:content})]);
         report('已复制到本机剪贴板');
         return;
       } catch (_) { /* HTTP / permission fallback below also works for text. */ }
@@ -114,7 +116,7 @@
 
   function attach() {
     const doc = frame.contentDocument;
-    if (!doc || doc.getElementById('remote-paste-sink')) return;
+    if (!doc?.body || doc.getElementById('remote-paste-sink')) return;
     const sink = doc.createElement('textarea');
     sink.id = 'remote-paste-sink';
     sink.setAttribute('aria-hidden', 'true');
