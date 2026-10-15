@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from urllib.parse import urlsplit
 
 from PIL import Image
@@ -101,7 +102,8 @@ def forward(handler):
         data = request_body(handler)
         port = int(os.environ.get("WEB_PORT", "4002")) + 17000
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
-        connection.request(handler.command, "/clipboard" + ("?paste=1" if parsed.query == "paste=1" else ""),
+        query = parsed.query if parsed.query in {"paste=1", "copy=1", "cut=1"} else ""
+        connection.request(handler.command, "/clipboard" + ("?" + query if query else ""),
                            body=data if handler.command == "POST" else None,
                            headers={"Content-Type": handler.headers.get("Content-Type", "text/plain"),
                                     "X-Remote-Clipboard": "1"})
@@ -140,6 +142,13 @@ class ClipboardHandler(BaseHTTPRequestHandler):
             body = request_body(self)
             with LOCK:
                 if self.command == "GET":
+                    data, mime = read_clipboard()
+                    return reply(self, 200, data, mime)
+                if parsed.query in {"copy=1", "cut=1"}:
+                    key = "ctrl+c" if parsed.query == "copy=1" else "ctrl+x"
+                    subprocess.run(["xdotool", "key", "--clearmodifiers", key],
+                                   check=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.15)
                     data, mime = read_clipboard()
                     return reply(self, 200, data, mime)
                 write_clipboard(body, self.headers.get("Content-Type", ""), parsed.query == "paste=1")
