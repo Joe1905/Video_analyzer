@@ -88,7 +88,7 @@ def main():
                 f"--proxy-server=http://127.0.0.1:{proxy_port}",
                 "--proxy-bypass-list=<-loopback>", "--disable-quic",
                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                "--no-sandbox", "--no-first-run", "--no-default-browser-check",
+                "--no-first-run", "--no-default-browser-check",
                 "--disable-dev-shm-usage", "--disable-background-networking",
                 "--disable-session-crashed-bubble", "--restore-last-session",
                 "--lang=zh-CN", "--window-position=0,0", "--window-size=1440,900",

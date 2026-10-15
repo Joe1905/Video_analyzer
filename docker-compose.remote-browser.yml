@@ -4,6 +4,9 @@ services:
     image: ${ANALYZER_IMAGE:-short-video-analyzer:latest}
     command: python scripts/remote_browser.py
     init: true
+    # Match the existing account browsers: Chrome's namespace sandbox needs this.
+    cap_add:
+      - SYS_ADMIN
     environment:
       WEB_PORT: ${WEB_PORT:-4002}
       TZ: ${TZ:-Asia/Shanghai}
