@@ -438,6 +438,7 @@ NAV_ITEMS = [
     {"key": "amazon", "href": "/amazon", "label": "Amazon", "title": "Amazon", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
     {"key": "proxy", "href": "/proxy", "label": "Proxy", "title": "账号 IP 池", "icon": '<path d="M4 12a8 8 0 0 1 16 0"/><path d="M8 12a4 4 0 0 1 8 0"/><path d="M12 12v8"/><path d="M9 20h6"/>'},
+    {"key": "remote-browser", "href": "/remote-browser", "label": "浏览器", "title": "独立远程浏览器", "icon": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>'},
     {"key": "tool", "href": "/tool", "label": "工具", "title": "图片标签工具", "icon": '<path d="M4 5h16v14H4z"/><path d="m8 15 3-3 2 2 3-4 3 5"/><circle cx="9" cy="9" r="1"/>'},
     {"key": "metrics", "href": "/metrics", "label": "视频列表", "title": "视频列表", "icon": '<path d="M4 19V5"/><path d="M20 19H4"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-7"/>'},
     {"key": "extract", "href": "/extract", "label": "\u5206\u6790", "title": "\u89c6\u9891\u5206\u6790", "icon": '<path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3z"/><path d="M8 21h8"/><path d="M12 19v2"/>'},
@@ -14366,8 +14367,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/duoplus":
             page = (SCRIPTS_DIR / "static" / "duoplus.html").read_text(encoding="utf-8")
             return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
-        if observation_proxy.handle(self, proxy_pool.novnc_port_plan()["allowed_ports"]):
+        remote_browser_port = int(os.getenv("WEB_PORT", "4002")) + 12000
+        if observation_proxy.handle(self, [*proxy_pool.novnc_port_plan()["allowed_ports"], remote_browser_port]):
             return
+        if parsed.path == "/remote-browser":
+            prefix = f"proxy/observation/{remote_browser_port}"
+            channel = f"/{prefix}/vnc.html?autoconnect=1&resize=scale&path={prefix}/websockify"
+            page = (SCRIPTS_DIR / "static" / "remote_browser.html").read_text(encoding="utf-8")
+            page = page.replace("__REMOTE_BROWSER_CHANNEL__", channel)
+            return text_response(self, HTTPStatus.OK, inject_unified_nav(page, parsed.path), "text/html; charset=utf-8")
         if market_discovery.handle(self, parsed, list_mcp_bridge_tools, execute_prefixed_tool):
             return
         if parsed.path == "/replication":
