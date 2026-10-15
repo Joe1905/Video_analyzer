@@ -22,7 +22,7 @@
 <textarea id="clipboard-text" aria-label="剪贴板内容" placeholder="在此按 Ctrl+V，可粘贴文字或图片"></textarea>
 <img id="clipboard-image" alt="剪贴板图片预览" hidden>
 <p id="clipboard-help"></p>
-<div class="clip-buttons"><button id="clipboard-send" type="button">发送到远程</button><button id="clipboard-fetch" type="button">取回远程剪贴板</button><button id="clipboard-copy" type="button">复制到本机</button><button id="clipboard-close" type="button">关闭</button></div>
+<div class="clip-buttons"><button id="clipboard-send" type="button">发送到远程</button><button id="clipboard-fetch" type="button">取回远程剪贴板</button><button id="clipboard-copy" type="button">复制到本机</button><a class="action" id="clipboard-download" download="remote-clipboard.png" hidden>下载图片</a><button id="clipboard-close" type="button">关闭</button></div>
 </dialog>
 <script>
 const channel = '__REMOTE_BROWSER_CHANNEL__';
@@ -32,6 +32,6 @@ document.getElementById('standalone').href = '/remote-browser?standalone=1';
 if (new URLSearchParams(location.search).has('standalone')) document.body.classList.add('standalone');
 document.getElementById('reconnect').onclick = () => { frame.src = channel; };
 </script>
-<script src="/assets/remote-clipboard.js?v=20261015-3"></script>
+<script src="/assets/remote-clipboard.js?v=20261015-4"></script>
 </body>
 </html>
