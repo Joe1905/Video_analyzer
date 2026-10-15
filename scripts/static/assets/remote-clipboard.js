@@ -14,7 +14,7 @@
   const explain = () => {
     help.textContent = window.isSecureContext
       ? '远程 → 本机：取回远程剪贴板，再点“复制到本机”。'
-      : '远程 → 本机：取回后可复制文字。当前为 HTTP 地址，图片请在预览上右键选择“复制图片”；HTTPS 地址支持直接复制图片。';
+      : '远程 → 本机：取回后，文字点“复制到本机”再按 Ctrl+C；图片在预览上右键选择“复制图片”。当前为 HTTP 地址，HTTPS 支持直接写入本机剪贴板。';
   };
   const focusRemote = () => frame.contentDocument?.querySelector('#noVNC_container canvas')?.focus({preventScroll:true});
 
@@ -70,26 +70,6 @@
     report(blob.type.startsWith('image/') ? '图片已粘贴到远程浏览器' : '文字已粘贴到远程浏览器');
   }
 
-  function copyText(value) {
-    const field = document.createElement('textarea');
-    field.value = value;
-    field.style.cssText = 'position:fixed;left:-10000px;top:0';
-    (dialog.open ? dialog : document.body).append(field);
-    field.focus();
-    field.select();
-    const onCopy = event => {
-      event.clipboardData.setData('text/plain', value);
-      event.preventDefault();
-    };
-    document.addEventListener('copy', onCopy, true);
-    try {
-      return document.execCommand('copy');
-    } finally {
-      document.removeEventListener('copy', onCopy, true);
-      field.remove();
-    }
-  }
-
   async function copyLocal(blob) {
     if (navigator.clipboard?.write && window.ClipboardItem) {
       try {
@@ -98,14 +78,16 @@
         await navigator.clipboard.write([new ClipboardItem({[mime]:content})]);
         report('已复制到本机剪贴板');
         return;
-      } catch (_) { /* HTTP / permission fallback below also works for text. */ }
+      } catch (_) { /* Keep a native copy path when the API is unavailable. */ }
     }
     if (!blob.type.startsWith('image/')) {
-      if (copyText(await blob.text())) {
-        report('文字已复制到本机剪贴板');
-        return;
-      }
-      throw new Error('请在剪贴板面板中选中文字，再按 Ctrl+C 复制');
+      text.value = await blob.text();
+      if (!dialog.open) dialog.showModal();
+      text.focus();
+      text.select();
+      help.textContent = '文字已选中，请按 Ctrl+C 复制到本机剪贴板';
+      report(help.textContent);
+      return;
     }
     throw new Error('当前地址不能直接写入本机图片剪贴板，请打开剪贴板面板，在图片预览上右键选择“复制图片”');
   }
@@ -117,7 +99,11 @@
     if (!blob.type.startsWith('image/')) text.value = await blob.text();
     report(blob.type.startsWith('image/') ? '已取回远程图片，可在剪贴板面板中复制到本机' : '已取回远程文字');
     if (auto) {
-      try { await copyLocal(blob); } catch (error) { report(error.message); }
+      if (navigator.clipboard?.write) {
+        try { await copyLocal(blob); } catch (error) { report(error.message); }
+      } else {
+        report('远程剪贴板已取回，点击顶部“剪贴板”可复制到本机');
+      }
       focusRemote();
     }
   }
