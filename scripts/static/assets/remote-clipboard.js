@@ -10,7 +10,7 @@
   const limit = 16 * 1024 * 1024;
   let staged = null;
   let imageUrl = '';
-  let copyTimer;
+  let copyPending = false;
   const report = message => { status.textContent = message; };
   const explain = () => {
     help.textContent = window.isSecureContext
@@ -96,9 +96,16 @@
     throw new Error('当前地址不能直接写入本机图片剪贴板，请打开剪贴板面板，在图片预览上右键选择“复制图片”');
   }
 
-  async function receive(auto = false) {
-    const response = await checked(await fetch(api, {headers:{'X-Remote-Clipboard':'1'}, cache:'no-store'}));
+  async function receive(auto = false, action = '') {
+    const options = {headers:{'X-Remote-Clipboard':'1'}, cache:'no-store'};
+    if (action) {
+      options.method = 'POST';
+      options.headers['Content-Type'] = 'text/plain';
+      options.body = '';
+    }
+    const response = await checked(await fetch(api + (action ? '?' + action + '=1' : ''), options));
     const blob = await response.blob();
+    if (auto && !blob.size) { report('远程剪贴板为空，请选中内容后重新复制'); return; }
     show(blob);
     if (!blob.type.startsWith('image/')) text.value = await blob.text();
     report(blob.type.startsWith('image/') ? '已取回远程图片，可在剪贴板面板中复制到本机' : '已取回远程文字');
@@ -110,6 +117,13 @@
       }
       focusRemote();
     }
+  }
+
+  async function remoteCopy(action) {
+    if (copyPending) return;
+    copyPending = true;
+    try { await receive(true, action); } catch (error) { report(error.message); }
+    finally { copyPending = false; }
   }
 
   function attach() {
@@ -137,9 +151,15 @@
         event.stopImmediatePropagation();
         sink.focus({preventScroll:true});
       } else if (key === 'c' || key === 'x') {
-        clearTimeout(copyTimer);
-        copyTimer = setTimeout(() => receive(true).catch(error => report(error.message)), 350);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        remoteCopy(key === 'c' ? 'copy' : 'cut');
       }
+    }, true);
+    for (const action of ['copy', 'cut']) doc.addEventListener(action, event => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      remoteCopy(action);
     }, true);
     doc.addEventListener('paste', event => {
       if (!event.clipboardData) return;
