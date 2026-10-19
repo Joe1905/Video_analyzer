@@ -8,6 +8,8 @@
  <label class="search-box"><span aria-hidden="true">⌕</span><input id="productFilter" type="search" placeholder="搜索商品名称或 ID" aria-label="搜索商品库"></label>
  <div class="library-meta"><span id="libraryMeta">与视频发布共用商品库</span><button id="reloadProducts" class="text-button">刷新列表</button></div>
  <button id="reviewLibraryLink" class="review-library-link" type="button"><span><strong>内容复盘 <span id="reviewLibraryCount"></span></strong><small>查看已生成的复盘结果</small></span><span aria-hidden="true">→</span></button>
+ <button id="uploadVideo" class="review-library-link" type="button"><span><strong>上传视频并翻译</strong><small>自动识别语音，西语也可译成中文 · 最大 512 MB</small></span><span aria-hidden="true">↑</span></button><button id="viewUpload" class="text-button" type="button" hidden>查看上传结果</button>
+ <input id="uploadVideoInput" type="file" accept=".mp4,.mov,.m4v,.webm,.mkv" hidden>
  <div id="products" class="product-list" aria-live="polite"><div class="empty small">正在读取商品库…</div></div>
  <div class="library-foot"><span class="status-dot"></span><span id="libraryFoot">主图本地缓存 · 无需重复远程加载</span></div>
 </aside>

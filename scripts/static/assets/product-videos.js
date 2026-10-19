@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[], selected:"", videos:[], job:null, loading:false, timer:null, seq:0, editing:null, imports:[], media:null, mediaState:null, playRequested:"", submitting:false};
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
 state.reviews = new Map();state.savedReviews=[];state.review=null;state.reviewSeq=0;state.reviewTimer=null;
+state.uploadId="";state.uploadTimer=null;state.uploading=false;state.uploadMode=false;
 async function loadReviewLinks() {
   try {
     const files=await api('/api/files');
@@ -270,6 +271,8 @@ async function deleteAccount() {
   finally {$("confirmDeleteAccount").disabled=false;}
 }
 async function openMedia(vid) {
+  if(state.uploading){toast("视频正在上传，请稍候。");return;}
+  state.uploadMode=false;clearTimeout(state.uploadTimer);$("mediaOriginal").hidden=false;$("mediaReviewButton").hidden=false;
   state.media=state.videos.find(v=>v.video_id===vid);state.mediaState=null;state.playRequested="";if(!state.media)return;
   $("mediaCaption").textContent=state.media.title||"无标题视频";$("mediaOriginal").href=url(state.media.url);
   $("player").innerHTML=image(current(),state.media,false)+'<button id="playVideo" class="play-overlay" aria-label="在线播放"><span>▷</span>在线播放</button>';$("audioPlayer").innerHTML="";$("downloadLinks").innerHTML="";
@@ -277,6 +280,7 @@ async function openMedia(vid) {
   $("mediaDialog").showModal();await renderMedia();
 }
 async function renderMedia() {
+  if(state.uploadMode)return;
   const video=state.media, pid=state.selected;if(!video||!$("mediaDialog").open)return;
   const media=await api(endpoint("media",pid,video.video_id));
   if(state.media?.video_id!==video.video_id||state.selected!==pid||!$("mediaDialog").open)return;
@@ -294,6 +298,65 @@ async function renderMedia() {
   if($("playVideo")){$("playVideo").disabled=busy();$("playVideo").innerHTML=busy()?"正在准备…":"<span>▷</span>在线播放";}
   $("extractAudio").disabled=busy()||Boolean(media.translation);$("extractAudio").textContent=media.translation?"✓ 翻译已完成":media.transcript?"继续翻译":"提取音频并翻译";
   state.mediaState=media;
+}
+function uploadEndpoint(name, extra={}) {
+  return `/api/product-videos/upload-${name}?`+new URLSearchParams({id:state.uploadId,...extra});
+}
+function showUpload() {
+  clearTimeout(state.uploadTimer);state.uploadMode=true;state.media=null;state.mediaState=null;
+  $("mediaOriginal").hidden=true;$("mediaReviewButton").hidden=true;$("mediaCaption").textContent="本地视频 · 音频提取与中文翻译";
+  for(const id of ["player","audioPlayer","downloadLinks","audioLanguage"])$(id).replaceChildren();
+  $("originalText").textContent="自动识别原始语言，包括西班牙语。";$("translatedText").textContent="识别完成后翻译为简体中文。";
+  $("extractAudio").disabled=true;$("extractAudio").textContent="正在处理…";
+  if(!$("mediaDialog").open)$("mediaDialog").showModal();
+}
+async function pollUpload() {
+  const id=state.uploadId;if(!id||!state.uploadMode||!$("mediaDialog").open)return;
+  clearTimeout(state.uploadTimer);
+  try {
+    const media=await api(uploadEndpoint("state"));
+    if(id!==state.uploadId||!state.uploadMode||!$("mediaDialog").open)return;
+    $("mediaCaption").textContent=media.filename;
+    $("mediaStatus").className="job-status "+media.status;$("mediaStatus").textContent=media.message;
+    if(media.downloaded&&!state.mediaState?.downloaded)$("player").innerHTML=`<video controls playsinline preload="metadata" src="${esc(uploadEndpoint("file",{kind:"video"}))}"></video>`;
+    if(media.audio_ready&&!state.mediaState?.audio_ready)$("audioPlayer").innerHTML=`<audio controls preload="metadata" src="${esc(uploadEndpoint("file",{kind:"audio"}))}"></audio>`;
+    $("downloadLinks").innerHTML=media.audio_ready?`<a href="${esc(uploadEndpoint("file",{kind:"audio",download:"1"}))}" download>保存音频 ↓</a>`:"";
+    $("originalText").textContent=media.transcript?.text||(media.transcript?"未识别到可翻译的语音。":"自动识别原始语言，包括西班牙语。");
+    $("translatedText").textContent=media.translation?.text||"识别完成后翻译为简体中文。";
+    const language=media.transcript?.language||"";$("audioLanguage").textContent=language==="es"?"西班牙语（es）":language;
+    $("extractAudio").disabled=media.status!=="failed";$("extractAudio").textContent=media.status==="failed"?"继续处理":media.status==="complete"?"处理已完成":"正在处理…";
+    state.mediaState=media;
+    if(["queued","running"].includes(media.status))state.uploadTimer=setTimeout(pollUpload,2500);
+  } catch(error) {
+    if(id!==state.uploadId||!state.uploadMode)return;
+    $("mediaStatus").className="job-status failed";$("mediaStatus").textContent=error.message;
+    $("extractAudio").disabled=false;$("extractAudio").textContent="重新读取进度";
+  }
+}
+async function retryUpload() {
+  $("extractAudio").disabled=true;
+  try {
+    if(state.mediaState?.status==="failed"){
+      const response=await fetch(uploadEndpoint("retry"),{method:"POST"});const result=await response.json();
+      if(!response.ok)throw new Error(result.error||"重试失败");
+    }
+    await pollUpload();
+  } catch(error){$("mediaStatus").textContent=error.message;$("extractAudio").disabled=false;}
+}
+function uploadVideo(file) {
+  if(!file||state.uploading)return;
+  if(!/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)||!file.size||file.size>512*1024*1024){toast("请选择不超过 512 MB 的 MP4、MOV、M4V、WebM 或 MKV 视频。",true);return;}
+  state.uploading=true;$("uploadVideo").disabled=true;$("mediaUploadVideo").disabled=true;
+  showUpload();$("mediaCaption").textContent=file.name;$("mediaStatus").className="job-status";$("mediaStatus").textContent="正在上传视频：0%（上传时请勿关闭页面）";
+  const xhr=new XMLHttpRequest();xhr.open("POST","/api/product-videos/upload?"+new URLSearchParams({filename:file.name}));xhr.setRequestHeader("Content-Type","application/octet-stream");
+  xhr.upload.onprogress=event=>{if(event.lengthComputable)$("mediaStatus").textContent=`正在上传视频：${Math.round(event.loaded/event.total*100)}%（上传时请勿关闭页面）`;};
+  xhr.onload=()=>{
+    try {const result=JSON.parse(xhr.responseText);if(xhr.status!==202)throw new Error(result.error||"上传失败");state.uploadId=result.id;$("viewUpload").hidden=false;if(state.uploadMode)pollUpload();else toast("视频已上传，正在后台处理，可点击“查看上传结果”。");}
+    catch(error){$("mediaStatus").className="job-status failed";$("mediaStatus").textContent=error.message;}
+  };
+  xhr.onerror=()=>{$("mediaStatus").className="job-status failed";$("mediaStatus").textContent="网络中断，请重新上传视频。";};
+  xhr.onloadend=()=>{state.uploading=false;$("uploadVideo").disabled=false;$("mediaUploadVideo").disabled=false;$("uploadVideoInput").value="";};
+  xhr.send(file);
 }
 function reviewText(value) {
   if(Array.isArray(value))return value.map(reviewText).join("；");
@@ -503,10 +566,15 @@ async function openSavedReview(name) {
 $("nativeReviewSaved").addEventListener("change",()=>openSavedReview($("nativeReviewSaved").value));
 $("reviewDialog").addEventListener("close",()=>{clearTimeout(state.reviewTimer);state.reviewSeq++;$("nativeReviewPreview").querySelectorAll("video").forEach(v=>v.pause());state.review=null;});
 document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("afterbegin",'<button id="mediaReviewButton" class="primary">内容复盘</button>');
+document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("beforeend",'<button id="mediaUploadVideo" class="secondary">上传视频并翻译</button>');
+$("uploadVideoInput").addEventListener("change",event=>uploadVideo(event.target.files[0]));
 document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event.target.replaceWith(Object.assign(document.createElement("span"),{textContent:"暂无图片"}));}},true);
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
+    if(["uploadVideo","mediaUploadVideo"].includes(target.id)){$("uploadVideoInput").click();return;}
+    if(target.id==="viewUpload"){if(!state.uploading){showUpload();await pollUpload();}return;}
+    if(target.id==="extractAudio"&&state.uploadMode)return retryUpload();
     if(target.hasAttribute('data-review-seek')){
       const video=$("nativeReviewPreview").querySelector('video');if(!video)throw new Error('视频暂不可播放');
       const seconds=Number(target.dataset.reviewSeek);const seek=()=>{video.currentTime=seconds;video.play().catch(()=>toast('已定位画面，点击播放即可。'));};
@@ -546,7 +614,7 @@ document.addEventListener("click",event=>{
 $("productFilter").addEventListener("input",renderProducts);$("videoFilter").addEventListener("input",()=>{state.page=1;renderVideos();});$("videoSort").addEventListener("change",()=>{state.page=1;renderVideos();});$("productForm").addEventListener("submit",saveProduct);
 $("accountForm").addEventListener("submit",saveAccount);
 $("importQuery").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();searchImport();}});
-$("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;});
+$("mediaDialog").addEventListener("close",()=>{document.querySelectorAll("#mediaDialog video,#mediaDialog audio").forEach(el=>el.pause());state.media=null;clearTimeout(state.uploadTimer);state.uploadMode=false;});
 $("videos").addEventListener("change",event=>{const id=event.target.dataset.selectVideo;if(id){if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderSelection();}});
 $("selectPage").addEventListener("change",event=>{for(const v of state.pageVideos){if(event.target.checked)state.checked.add(v.video_id);else state.checked.delete(v.video_id);}renderSelection();});
 $("batchAction").addEventListener("change",()=>{if($("batchAction").value==="write")openTable();$("batchAction").value="";});
