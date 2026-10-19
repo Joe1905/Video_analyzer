@@ -4,7 +4,7 @@ const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[]
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
 state.reviews = new Map();state.savedReviews=[];state.review=null;state.reviewSeq=0;state.reviewTimer=null;
 state.uploadId="";state.uploadTimer=null;state.uploading=false;state.uploadMode=false;
-try {state.uploadId=sessionStorage.getItem("video-upload-id")||"";$("viewUpload").hidden=!state.uploadId;}catch{}
+state.uploads=[];state.uploadListTimer=null;state.uploadListSeq=0;
 async function loadReviewLinks() {
   try {
     const files=await api('/api/files');
@@ -56,12 +56,14 @@ async function api(path, body) {
   const data=await response.json();if(!response.ok)throw new Error(data.error||"请求失败，请重试");return data;
 }
 function renderProducts() {
+  if(state.mode==="uploads"){renderUploads();return;}
   const q=$("productFilter").value.trim().toLowerCase();
   const products=state.products.filter(p=>(p.product_name+" "+p.product_id+" "+(p.handle||"")).toLowerCase().includes(q));
   $("productCount").textContent=state.products.length;
 $("products").innerHTML=products.map(p=>`<button class="product-row ${p.product_id===state.selected?"active":""}" data-product="${esc(p.product_id)}" aria-pressed="${p.product_id===state.selected}"><span class="product-thumb">${image(p)}</span><span class="product-row-copy"><strong>${esc(p.product_name)}</strong><span class="row-meta"><span>${esc(p.price||"价格未知")}</span><span>${esc(p.status||"状态未知")}</span></span><span class="row-id">${esc(p.handle?(p.pool_linked?(p.feishu_user_name||"已关联账号池 · 未绑定飞书"):"未关联账号池 · 采集禁用"):p.product_id)}</span></span></button>`).join("")||`<div class="empty small">${state.products.length?"没有匹配的结果":state.mode==="accounts"?"暂无 TikTok 账号，点击 ＋ 手动添加":"商品库还是空的，点击 ＋ 添加商品"}</div>`;
 }
 async function loadProducts(preferred=state.selected) {
+  if(state.mode==="uploads")return loadUploads();
   const token=++state.librarySeq;const result=await api(state.mode==="accounts"?endpoint("accounts"):"/api/proxy/products");if(token!==state.librarySeq)return;state.products=result.products||[];renderProducts();
   const selected=state.products.find(p=>p.product_id===preferred)||state.products[0];
   if(selected)await selectProduct(selected.product_id);
@@ -70,6 +72,18 @@ async function loadProducts(preferred=state.selected) {
 async function switchLibrary(mode) {
   if(mode===state.mode||state.submitting)return;
   state.mode=mode;state.selected="";state.products=[];state.videos=[];state.job=null;state.hasMore=false;state.seq++;clearTimeout(state.timer);
+  state.librarySeq++;state.uploadListSeq++;clearTimeout(state.uploadListTimer);
+  const uploads=mode==="uploads";
+  $("uploadWorkspace").hidden=!uploads;$("products").hidden=uploads;$("reviewLibraryLink").hidden=uploads;
+  document.querySelectorAll("[data-library]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.library===mode)));
+  if(uploads){
+    history.replaceState(null,"",location.pathname+location.search+"#uploads");
+    $("libraryTitle").textContent="上传记录";$("addProduct").hidden=true;$("productCount").textContent=state.uploads.length;
+    $("productFilter").value="";$("productFilter").placeholder="搜索上传的视频";$("productFilter").setAttribute("aria-label","搜索上传的视频");
+    $("libraryMeta").textContent="本地上传 · 自动排队处理";$("libraryFoot").textContent="音频、原文与译文持续保留";
+    $("productWorkspace").hidden=true;$("workspaceEmpty").hidden=true;renderUploads();await loadUploads();return;
+  }
+  if(location.hash==="#uploads")history.replaceState(null,"",location.pathname+location.search);
   const account=mode==="accounts";
   $("videoSort").value=account?"published_at":"views";
   $("productsTab").setAttribute("aria-pressed",String(!account));$("accountsTab").setAttribute("aria-pressed",String(account));
@@ -207,7 +221,7 @@ function renderVideos() {
   $("refreshAll").disabled=busy()||state.loading;$("editProduct").disabled=busy();$("deleteProduct").disabled=busy();
   $("refreshAll").textContent=busy()?"↻ 正在处理…":p.handle?"↻ 查询最新一页":"↻ 更新全部视频";
   $("loadMore").hidden=!p.handle||!state.hasMore;$("loadMore").disabled=busy()||state.loading;
-  $("productsTab").disabled=state.submitting;$("accountsTab").disabled=state.submitting;
+  $("productsTab").disabled=state.submitting;$("accountsTab").disabled=state.submitting;$("uploadsTab").disabled=state.submitting;
   $("totalVideos").textContent=state.loading?"—":state.videos.length;
   for(const [key,id] of [["views","totalViews"],["likes","totalLikes"]]) {const known=state.videos.filter(v=>v[key]!=null);$(id).textContent=known.length?fmt(known.reduce((n,v)=>n+Number(v[key]),0)):"—";}
   renderJobStatus();
@@ -303,6 +317,34 @@ async function renderMedia() {
 function uploadEndpoint(name, extra={}) {
   return `/api/product-videos/upload-${name}?`+new URLSearchParams({id:state.uploadId,...extra});
 }
+function renderUploads() {
+  const jobs=state.uploads, query=$("productFilter").value.trim().toLowerCase();
+  $("productCount").textContent=jobs.length;
+  const count=status=>jobs.filter(job=>job.status===status).length;
+  $("uploadCounts").textContent=`共 ${jobs.length} 条 · 等待 ${count("queued")} · 处理中 ${count("running")} · 完成 ${count("complete")} · 失败 ${count("failed")}`;
+  const labels={queued:"等待处理",running:"处理中",complete:"已完成",failed:"处理失败"};
+  const visible=jobs.filter(job=>job.filename.toLowerCase().includes(query));
+  const markup=visible.map(job=>`<article class="upload-task" data-upload-task="${esc(job.id)}"><span class="upload-task-icon" aria-hidden="true">▷</span><div class="upload-task-copy"><h4>${esc(job.filename)}</h4><p class="subtle">${date(job.created_at,true)}${job.size?` · ${(job.size/1024/1024).toFixed(1)} MB`:""}${job.has_translation?" · 中文译文已保存":""}${!job.downloaded?" · 视频缓存已过期":""}</p><p class="upload-task-message">${esc(job.message)}</p></div><div class="upload-task-actions"><span class="upload-task-status ${esc(job.status)}">${esc(labels[job.status]||job.status)}</span><div><button class="secondary" data-open-upload="${esc(job.id)}">${job.status==="complete"?"回看":"查看进度"}</button>${job.status==="failed"?`<button class="text-button" data-retry-upload="${esc(job.id)}">继续处理</button>`:""}</div></div></article>`).join("")||`<div class="empty"><h3>${query?"没有匹配的上传记录":"还没有上传视频"}</h3><p>${query?"试试其他文件名。":"点击“上传视频 · 加入队列”，处理完成后可在这里回看。"}</p></div>`;
+  if(state.uploadMarkup!==markup){$("uploadTasks").innerHTML=markup;state.uploadMarkup=markup;}
+}
+async function loadUploads() {
+  if(state.mode!=="uploads")return;
+  clearTimeout(state.uploadListTimer);const seq=++state.uploadListSeq;let failed=false;
+  try {
+    const result=await api("/api/product-videos/upload-list");
+    if(state.mode!=="uploads"||seq!==state.uploadListSeq)return;
+    state.uploads=result.jobs||[];inlineError("uploadListError");renderUploads();
+  } catch(error){if(state.mode!=="uploads"||seq!==state.uploadListSeq)return;failed=true;inlineError("uploadListError",error.message);}
+  if(state.mode==="uploads"&&(failed||state.uploading||state.uploads.some(job=>["queued","running"].includes(job.status))))state.uploadListTimer=setTimeout(loadUploads,2500);
+}
+async function openUploadTask(id) {
+  state.uploadId=id;showUpload();await pollUpload();
+}
+async function retryUploadTask(id) {
+  const response=await fetch(`/api/product-videos/upload-retry?${new URLSearchParams({id})}`,{method:"POST"});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||"重试失败");
+  await loadUploads();
+}
 function showUpload() {
   clearTimeout(state.uploadTimer);state.uploadMode=true;state.media=null;state.mediaState=null;
   $("mediaOriginal").hidden=true;$("mediaReviewButton").hidden=true;$("mediaCaption").textContent="本地视频 · 音频提取与中文翻译";
@@ -338,26 +380,44 @@ async function retryUpload() {
   $("extractAudio").disabled=true;
   try {
     if(state.mediaState?.status==="failed"){
-      const response=await fetch(uploadEndpoint("retry"),{method:"POST"});const result=await response.json();
-      if(!response.ok)throw new Error(result.error||"重试失败");
+      await retryUploadTask(state.uploadId);
     }
     await pollUpload();
   } catch(error){$("mediaStatus").textContent=error.message;$("extractAudio").disabled=false;}
 }
-function uploadVideo(file) {
-  if(!file||state.uploading)return;
-  if(!/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)||!file.size||file.size>512*1024*1024){toast("请选择不超过 512 MB 的 MP4、MOV、M4V、WebM 或 MKV 视频。",true);return;}
-  state.uploading=true;$("uploadVideo").disabled=true;$("mediaUploadVideo").disabled=true;
-  showUpload();$("mediaCaption").textContent=file.name;$("mediaStatus").className="job-status";$("mediaStatus").textContent="正在上传视频：0%（上传时请勿关闭页面）";
-  const xhr=new XMLHttpRequest();xhr.open("POST","/api/product-videos/upload?"+new URLSearchParams({filename:file.name}));xhr.setRequestHeader("Content-Type","application/octet-stream");
-  xhr.upload.onprogress=event=>{if(event.lengthComputable)$("mediaStatus").textContent=`正在上传视频：${Math.round(event.loaded/event.total*100)}%（上传时请勿关闭页面）`;};
-  xhr.onload=()=>{
-    try {const result=JSON.parse(xhr.responseText);if(xhr.status!==202)throw new Error(result.error||"上传失败");state.uploadId=result.id;try{sessionStorage.setItem("video-upload-id",result.id);}catch{}$("viewUpload").hidden=false;if(state.uploadMode)pollUpload();else toast("视频已上传，正在后台处理，可点击“查看上传结果”。");}
-    catch(error){$("mediaStatus").className="job-status failed";$("mediaStatus").textContent=error.message;}
-  };
-  xhr.onerror=()=>{$("mediaStatus").className="job-status failed";$("mediaStatus").textContent="网络中断，请重新上传视频。";};
-  xhr.onloadend=()=>{state.uploading=false;$("uploadVideo").disabled=false;$("mediaUploadVideo").disabled=false;$("uploadVideoInput").value="";};
-  xhr.send(file);
+function sendUpload(file, onProgress) {
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();xhr.open("POST","/api/product-videos/upload?"+new URLSearchParams({filename:file.name}));xhr.setRequestHeader("Content-Type","application/octet-stream");
+    xhr.upload.onprogress=event=>{if(event.lengthComputable)onProgress(Math.round(event.loaded/event.total*100));};
+    xhr.onload=()=>{try{const result=JSON.parse(xhr.responseText);if(xhr.status!==202)throw new Error(result.error||"上传失败");resolve(result);}catch(error){reject(error);}};
+    xhr.onerror=()=>reject(new Error("网络中断，请重新上传视频。"));xhr.send(file);
+  });
+}
+async function uploadVideos(files) {
+  if(!files.length||state.uploading)return;
+  state.uploading=true;
+  for(const id of ["uploadVideo","mediaUploadVideo","uploadQueueVideo"])$(id).disabled=true;
+  if($("mediaDialog").open)$("mediaDialog").close();
+  let added=0;const errors=[];
+  try {
+    if(state.mode!=="uploads")await switchLibrary("uploads");
+    $("uploadTransfer").hidden=false;$("uploadTransfer").className="job-status";$("uploadTransferProgress").hidden=false;
+    for(const [index,file] of files.entries()){
+      const progress=percent=>{$("uploadTransferProgress").value=percent;$("uploadTransferText").textContent=`正在上传 ${index+1}/${files.length}：${file.name} · ${percent}%（上传时请勿关闭页面）`;};
+      progress(0);
+      try {
+        if(!/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)||!file.size||file.size>512*1024*1024)throw new Error("请选择不超过 512 MB 的 MP4、MOV、M4V、WebM 或 MKV 视频");
+        await sendUpload(file,progress);added++;
+        await loadUploads();
+      } catch(error){errors.push(`${file.name}：${error.message}`);}
+    }
+    $("uploadTransferProgress").hidden=true;$("uploadTransfer").className="job-status"+(errors.length?" failed":"");
+    $("uploadTransferText").textContent=`已加入队列 ${added} 个视频。`+(errors.length?` ${errors.join("；")}`:"处理会在后台继续，可在下方查看进度和回看结果。");
+  } finally {
+    state.uploading=false;$("uploadVideoInput").value="";
+    for(const id of ["uploadVideo","mediaUploadVideo","uploadQueueVideo"])$(id).disabled=false;
+    await loadUploads();
+  }
 }
 function reviewText(value) {
   if(Array.isArray(value))return value.map(reviewText).join("；");
@@ -568,13 +628,14 @@ $("nativeReviewSaved").addEventListener("change",()=>openSavedReview($("nativeRe
 $("reviewDialog").addEventListener("close",()=>{clearTimeout(state.reviewTimer);state.reviewSeq++;$("nativeReviewPreview").querySelectorAll("video").forEach(v=>v.pause());state.review=null;});
 document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("afterbegin",'<button id="mediaReviewButton" class="primary">内容复盘</button>');
 document.querySelector("#mediaDialog .media-actions").insertAdjacentHTML("beforeend",'<button id="mediaUploadVideo" class="secondary">上传视频并翻译</button>');
-$("uploadVideoInput").addEventListener("change",event=>uploadVideo(event.target.files[0]));
+$("uploadVideoInput").addEventListener("change",event=>uploadVideos([...event.target.files]).catch(error=>toast(error.message,true)));
 document.addEventListener("error",event=>{if(event.target.tagName==="IMG"){event.target.replaceWith(Object.assign(document.createElement("span"),{textContent:"暂无图片"}));}},true);
 document.addEventListener("click",event=>{
   const target=event.target.closest("button");if(!target||target.disabled)return;
   const run=async()=>{
-    if(["uploadVideo","mediaUploadVideo"].includes(target.id)){$("uploadVideoInput").click();return;}
-    if(target.id==="viewUpload"){if(!state.uploading){showUpload();await pollUpload();}return;}
+    if(["uploadVideo","mediaUploadVideo","uploadQueueVideo"].includes(target.id)){$("uploadVideoInput").click();return;}
+    if(target.dataset.openUpload)return openUploadTask(target.dataset.openUpload);
+    if(target.dataset.retryUpload)return retryUploadTask(target.dataset.retryUpload);
     if(target.id==="extractAudio"&&state.uploadMode)return retryUpload();
     if(target.hasAttribute('data-review-seek')){
       const video=$("nativeReviewPreview").querySelector('video');if(!video)throw new Error('视频暂不可播放');
@@ -621,6 +682,6 @@ $("selectPage").addEventListener("change",event=>{for(const v of state.pageVideo
 $("batchAction").addEventListener("change",()=>{if($("batchAction").value==="write")openTable();$("batchAction").value="";});
 $("tableChoice").addEventListener("change",tableChoiceChanged);
 $("tableDialog").addEventListener("cancel",event=>{if(state.writing)event.preventDefault();});
-switchLibrary("accounts").catch(e=>{$("products").innerHTML='<div class="empty small">账号池加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
+switchLibrary(location.hash==="#uploads"?"uploads":"accounts").catch(e=>{$("products").innerHTML='<div class="empty small">列表加载失败，请点击刷新列表重试。</div>';toast(e.message,true);});
 loadReviewLinks();
 $("reloadProducts").addEventListener("click", loadReviewLinks);

@@ -31,6 +31,7 @@ _images_lock = threading.Lock()
 _audio_lock = threading.Lock()
 _table_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="product-videos")
+_upload_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-uploads")
 _owner = uuid.uuid4().hex
 _initialized = False
 _cleanup_started = False
@@ -722,31 +723,47 @@ def upload_folder(upload_id):
     return MEDIA / "uploads" / upload_id
 
 
-def upload_state(upload_id):
+def upload_state(upload_id, details=True):
     folder = upload_folder(upload_id)
     path = folder / "job.json"
     if not path.is_file():
         raise FileNotFoundError("上传任务不存在")
     result = json.loads(path.read_text(encoding="utf-8"))
+    result.setdefault("created_at", path.stat().st_mtime)
     if result["status"] in {"running", "queued"} and result.get("owner") != _owner:
         result.update(status="failed", message="服务已重启，点击继续处理可复用已保存的音频和原文。")
     result["downloaded"] = video_expiry(folder) > time.time()
     result["audio_ready"] = (folder / "audio.mp3").is_file()
     for key in ("transcript", "translation"):
         path = folder / (key + ".json")
-        result[key] = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        result["has_" + key] = path.is_file()
+        if details:
+            result[key] = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
     return result
 
 
+def upload_list():
+    jobs = []
+    for path in (MEDIA / "uploads").glob("*/job.json"):
+        try:
+            jobs.append(upload_state(path.parent.name, details=False))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # A damaged record must not hide other saved results.
+    return {"jobs": sorted(jobs, key=lambda job: (job["created_at"], job["id"]), reverse=True)}
+
+
 def save_upload(job):
+    job["updated_at"] = time.time()
     write_json(upload_folder(job["id"]) / "job.json", job)
 
 
 def run_upload(job):
     try:
-        job.update(status="running", message="等待音频处理…")
+        job.update(status="queued", message="已加入队列，等待音频处理…")
         save_upload(job)
         with _audio_lock:
+            job.update(status="running", message="正在检查视频音轨…")
+            save_upload(job)
             folder = upload_folder(job["id"])
             if not (folder / "audio.mp3").is_file():
                 probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(folder / "video.mp4")], capture_output=True, text=True, timeout=30)
@@ -773,6 +790,7 @@ def receive_upload(handler, query):
     if not 0 < length <= 512 * 1024 * 1024:
         raise ValueError("视频不能为空，单个文件不能超过 512 MB")
     job = {"id": uuid.uuid4().hex, "filename": name[:255], "owner": _owner,
+           "created_at": time.time(), "size": length,
            "status": "queued", "message": "视频已上传，等待提取音频并翻译…"}
     folder = upload_folder(job["id"])
     folder.mkdir(parents=True)
@@ -789,7 +807,7 @@ def receive_upload(handler, query):
         pending.replace(folder / "video.mp4")
         write_json(folder / "cache.json", {"expires_at": time.time() + 7 * 86400})
         save_upload(job)
-        _pool.submit(run_upload, job)
+        _upload_pool.submit(run_upload, job)
     finally:
         pending.unlink(missing_ok=True)
     return {"id": job["id"]}
@@ -803,10 +821,10 @@ def retry_upload(upload_id):
         folder = upload_folder(upload_id)
         if not (folder / "audio.mp3").is_file() and not result["downloaded"]:
             raise ValueError("视频缓存已过期，请重新上传")
-        job = {key: result[key] for key in ("id", "filename")}
+        job = {key: result[key] for key in ("id", "filename", "created_at", "size") if key in result}
         job.update(owner=_owner, status="queued", message="等待继续处理…")
         save_upload(job)
-        _pool.submit(run_upload, job)
+        _upload_pool.submit(run_upload, job)
     return {"id": upload_id}
 
 
@@ -901,10 +919,12 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if endpoint in {"upload", "upload-state", "upload-retry", "upload-file"}:
+        if endpoint in {"upload", "upload-list", "upload-state", "upload-retry", "upload-file"}:
             upload_id = query.get("id", [""])[0]
             if endpoint == "upload" and handler.command == "POST":
                 reply(handler, 202, receive_upload(handler, query))
+            elif endpoint == "upload-list" and handler.command == "GET":
+                reply(handler, 200, upload_list())
             elif endpoint == "upload-retry" and handler.command == "POST":
                 reply(handler, 202, retry_upload(upload_id))
             elif endpoint == "upload-state" and handler.command == "GET":
