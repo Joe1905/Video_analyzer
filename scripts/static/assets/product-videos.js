@@ -4,6 +4,7 @@ const state = {mode:"products", page:1, hasMore:false, librarySeq:0, products:[]
 Object.assign(state,{selecting:false,checked:new Set(),pageVideos:[],tables:[],writing:false});
 state.reviews = new Map();state.savedReviews=[];state.review=null;state.reviewSeq=0;state.reviewTimer=null;
 state.uploadId="";state.uploadTimer=null;state.uploading=false;state.uploadMode=false;
+try {state.uploadId=sessionStorage.getItem("video-upload-id")||"";$("viewUpload").hidden=!state.uploadId;}catch{}
 async function loadReviewLinks() {
   try {
     const files=await api('/api/files');
@@ -351,7 +352,7 @@ function uploadVideo(file) {
   const xhr=new XMLHttpRequest();xhr.open("POST","/api/product-videos/upload?"+new URLSearchParams({filename:file.name}));xhr.setRequestHeader("Content-Type","application/octet-stream");
   xhr.upload.onprogress=event=>{if(event.lengthComputable)$("mediaStatus").textContent=`正在上传视频：${Math.round(event.loaded/event.total*100)}%（上传时请勿关闭页面）`;};
   xhr.onload=()=>{
-    try {const result=JSON.parse(xhr.responseText);if(xhr.status!==202)throw new Error(result.error||"上传失败");state.uploadId=result.id;$("viewUpload").hidden=false;if(state.uploadMode)pollUpload();else toast("视频已上传，正在后台处理，可点击“查看上传结果”。");}
+    try {const result=JSON.parse(xhr.responseText);if(xhr.status!==202)throw new Error(result.error||"上传失败");state.uploadId=result.id;try{sessionStorage.setItem("video-upload-id",result.id);}catch{}$("viewUpload").hidden=false;if(state.uploadMode)pollUpload();else toast("视频已上传，正在后台处理，可点击“查看上传结果”。");}
     catch(error){$("mediaStatus").className="job-status failed";$("mediaStatus").textContent=error.message;}
   };
   xhr.onerror=()=>{$("mediaStatus").className="job-status failed";$("mediaStatus").textContent="网络中断，请重新上传视频。";};

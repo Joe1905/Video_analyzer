@@ -110,6 +110,7 @@ def main():
                     assert page.locator("#extractAudio").is_disabled()
                     page.screenshot(path="/tmp/video-upload-desktop.png")
                     page.keyboard.press("Escape")
+                    page.reload(wait_until="networkidle")
                     page.locator("#viewUpload").click()
                     page.wait_for_function("document.querySelector('#translatedText').textContent.includes('感谢收听')")
                     page.set_viewport_size({"width": 390, "height": 844})
