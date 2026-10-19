@@ -54,8 +54,10 @@ def cleanup_media():
     if not _audio_lock.acquire(blocking=False):
         return
     try:
-        for target in MEDIA.glob("*/video.mp4"):
-            if target.parent.name.isascii() and target.parent.name.isdigit() and video_expiry(target.parent) <= time.time():
+        targets = list(MEDIA.glob("*/video.mp4")) + list((MEDIA / "uploads").glob("*/video.mp4"))
+        for target in targets:
+            if ((target.parent.name.isascii() and target.parent.name.isdigit()) or
+                    (target.parent.parent == MEDIA / "uploads" and re.fullmatch(r"[a-f0-9]{32}", target.parent.name))) and video_expiry(target.parent) <= time.time():
                 target.unlink(missing_ok=True)
                 (target.parent / "cache.json").unlink(missing_ok=True)
     finally:
@@ -673,40 +675,139 @@ def prepare_media(job):
         if job["action"] in {"play", "download", "review"}:
             job["message"] = "视频已就绪，可以播放。"
             return
-        audio = folder / "audio.mp3"
-        if not audio.is_file():
-            job["message"] = "正在提取音频…"
-            save_job(job)
-            pending = folder / "audio.pending.mp3"
-            try:
-                subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(target), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", str(pending)], capture_output=True, timeout=120, check=True)
-                pending.replace(audio)
-            except subprocess.CalledProcessError:
-                raise ValueError("无法提取音频，视频可能没有音轨")
-            finally:
-                pending.unlink(missing_ok=True)
-        transcript_path = folder / "transcript.json"
-        if not transcript_path.is_file():
-            job["message"] = "音频已提取，正在识别语音（首次加载模型可能较慢）…"
-            save_job(job)
-            subprocess.run([sys.executable, str(Path(__file__).resolve()), "--transcribe", str(audio), str(transcript_path)], capture_output=True, timeout=900, check=True)
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-        if not transcript.get("text", "").strip():
-            job["message"] = "音频已提取，未识别到可翻译的语音。"
-            return
-        translation_path = folder / "translation.json"
-        if not translation_path.is_file():
-            job["message"] = "语音识别完成，正在翻译为简体中文…"
-            save_job(job)
-            from translate_analysis import translate_text_chunked, DEFAULT_API_URL, DEFAULT_MODEL
-            key = os.getenv("DEEPSEEK_API_KEY", "")
-            if not key:
-                raise ValueError("原文已保存；翻译需要配置 DEEPSEEK_API_KEY")
-            translated = translate_text_chunked(key, os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL), os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL), transcript["text"], 3000, 8192)
-            if not translated.strip():
-                raise ValueError("翻译返回为空，原文已保存，可重试")
-            write_json(translation_path, {"text": translated, "updated_at": time.time()})
-        job["message"] = "音频提取、语音转写和中文翻译已完成。"
+        extract_audio(folder, job, save_job)
+
+
+def extract_audio(folder, job, save):
+    target = folder / "video.mp4"
+    audio = folder / "audio.mp3"
+    if not audio.is_file():
+        job["message"] = "正在提取音频…"
+        save(job)
+        pending = folder / "audio.pending.mp3"
+        try:
+            subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(target), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", str(pending)], capture_output=True, timeout=120, check=True)
+            pending.replace(audio)
+        except subprocess.CalledProcessError:
+            raise ValueError("无法提取音频，视频可能没有音轨")
+        finally:
+            pending.unlink(missing_ok=True)
+    transcript_path = folder / "transcript.json"
+    if not transcript_path.is_file():
+        job["message"] = "音频已提取，正在识别语音（首次加载模型可能较慢）…"
+        save(job)
+        subprocess.run([sys.executable, str(Path(__file__).resolve()), "--transcribe", str(audio), str(transcript_path)], capture_output=True, timeout=900, check=True)
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    if not transcript.get("text", "").strip():
+        job["message"] = "音频已提取，未识别到可翻译的语音。"
+        return
+    translation_path = folder / "translation.json"
+    if not translation_path.is_file():
+        job["message"] = "语音识别完成，正在翻译为简体中文…"
+        save(job)
+        from translate_analysis import translate_text_chunked, DEFAULT_API_URL, DEFAULT_MODEL
+        key = os.getenv("DEEPSEEK_API_KEY", "")
+        if not key:
+            raise ValueError("原文已保存；翻译需要配置 DEEPSEEK_API_KEY")
+        translated = translate_text_chunked(key, os.getenv("DEEPSEEK_API_URL", DEFAULT_API_URL), os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL), transcript["text"], 3000, 8192)
+        if not translated.strip():
+            raise ValueError("翻译返回为空，原文已保存，可重试")
+        write_json(translation_path, {"text": translated, "updated_at": time.time()})
+    job["message"] = "音频提取、语音转写和中文翻译已完成。"
+
+
+def upload_folder(upload_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", str(upload_id)):
+        raise ValueError("无效的上传任务 ID")
+    return MEDIA / "uploads" / upload_id
+
+
+def upload_state(upload_id):
+    folder = upload_folder(upload_id)
+    path = folder / "job.json"
+    if not path.is_file():
+        raise FileNotFoundError("上传任务不存在")
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if result["status"] in {"running", "queued"} and result.get("owner") != _owner:
+        result.update(status="failed", message="服务已重启，点击继续处理可复用已保存的音频和原文。")
+    result["downloaded"] = video_expiry(folder) > time.time()
+    result["audio_ready"] = (folder / "audio.mp3").is_file()
+    for key in ("transcript", "translation"):
+        path = folder / (key + ".json")
+        result[key] = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    return result
+
+
+def save_upload(job):
+    write_json(upload_folder(job["id"]) / "job.json", job)
+
+
+def run_upload(job):
+    try:
+        job.update(status="running", message="等待音频处理…")
+        save_upload(job)
+        with _audio_lock:
+            folder = upload_folder(job["id"])
+            if not (folder / "audio.mp3").is_file():
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(folder / "video.mp4")], capture_output=True, text=True, timeout=30)
+                if probe.returncode:
+                    raise ValueError("无法读取视频，请上传有效的 MP4、MOV、M4V、WebM 或 MKV 文件")
+                streams = {stream.get("codec_type") for stream in json.loads(probe.stdout).get("streams", [])}
+                if "video" not in streams:
+                    raise ValueError("上传的文件没有视频画面，请选择视频文件")
+                if "audio" not in streams:
+                    raise ValueError("视频没有音轨，无法提取语音和翻译")
+            extract_audio(folder, job, save_upload)
+            job["status"] = "complete"
+    except Exception as exc:
+        job.update(status="failed", message=public_error(exc))
+    finally:
+        save_upload(job)
+
+
+def receive_upload(handler, query):
+    length = int(handler.headers.get("Content-Length", "0"))
+    name = str(query.get("filename", [""])[0]).replace("\\", "/").rsplit("/", 1)[-1]
+    if Path(name).suffix.lower() not in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}:
+        raise ValueError("请选择 MP4、MOV、M4V、WebM 或 MKV 视频")
+    if not 0 < length <= 512 * 1024 * 1024:
+        raise ValueError("视频不能为空，单个文件不能超过 512 MB")
+    job = {"id": uuid.uuid4().hex, "filename": name[:255], "owner": _owner,
+           "status": "queued", "message": "视频已上传，等待提取音频并翻译…"}
+    folder = upload_folder(job["id"])
+    folder.mkdir(parents=True)
+    pending = folder / "video.part"
+    try:
+        with pending.open("wb") as output:
+            remaining = length
+            while remaining:
+                chunk = handler.rfile.read(min(128 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("上传中断，请重新上传视频")
+                output.write(chunk)
+                remaining -= len(chunk)
+        pending.replace(folder / "video.mp4")
+        write_json(folder / "cache.json", {"expires_at": time.time() + 7 * 86400})
+        save_upload(job)
+        _pool.submit(run_upload, job)
+    finally:
+        pending.unlink(missing_ok=True)
+    return {"id": job["id"]}
+
+
+def retry_upload(upload_id):
+    with _lock:
+        result = upload_state(upload_id)
+        if result["status"] in {"running", "queued", "complete"}:
+            return {"id": upload_id}
+        folder = upload_folder(upload_id)
+        if not (folder / "audio.mp3").is_file() and not result["downloaded"]:
+            raise ValueError("视频缓存已过期，请重新上传")
+        job = {key: result[key] for key in ("id", "filename")}
+        job.update(owner=_owner, status="queued", message="等待继续处理…")
+        save_upload(job)
+        _pool.submit(run_upload, job)
+    return {"id": upload_id}
 
 
 def table_fields(target, video, source):
@@ -800,7 +901,26 @@ def handle(handler, parsed, serve_file):
     vid = query.get("video_id", [""])[0]
     endpoint = parsed.path.removeprefix("/api/product-videos/")
     try:
-        if handler.command == "POST" and endpoint in {"accounts", "accounts/delete", "jobs", "write-table", "orders", "collect-retention"}:
+        if endpoint in {"upload", "upload-state", "upload-retry", "upload-file"}:
+            upload_id = query.get("id", [""])[0]
+            if endpoint == "upload" and handler.command == "POST":
+                reply(handler, 202, receive_upload(handler, query))
+            elif endpoint == "upload-retry" and handler.command == "POST":
+                reply(handler, 202, retry_upload(upload_id))
+            elif endpoint == "upload-state" and handler.command == "GET":
+                reply(handler, 200, upload_state(upload_id))
+            elif endpoint == "upload-file" and handler.command == "GET":
+                result = upload_state(upload_id)
+                kind = query.get("kind", ["audio"])[0]
+                if kind not in {"audio", "video"}:
+                    raise ValueError("无效的文件类型")
+                path = upload_folder(upload_id) / ("audio.mp3" if kind == "audio" else "video.mp4")
+                if not path.is_file() or (kind == "video" and not result["downloaded"]):
+                    raise FileNotFoundError("文件不存在或视频缓存已过期")
+                serve_file(handler, path, "audio/mpeg" if kind == "audio" else "video/mp4", f"{Path(result['filename']).stem}{path.suffix}", path.stat().st_size, download=query.get("download", ["0"])[0] == "1")
+            else:
+                reply(handler, 405, {"error": "不支持的操作"})
+        elif handler.command == "POST" and endpoint in {"accounts", "accounts/delete", "jobs", "write-table", "orders", "collect-retention"}:
             length = int(handler.headers.get("Content-Length", "0"))
             if not 0 < length <= 16384:
                 raise ValueError("请求大小无效")
@@ -867,5 +987,7 @@ def handle(handler, parsed, serve_file):
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--transcribe"]:
     from direct_video_analyze import transcribe_audio
-    result = transcribe_audio(Path(sys.argv[2]), None, os.getenv("WHISPER_MODEL", "small"))
+    model = os.getenv("WHISPER_MODEL", "small")
+    # English-only checkpoints cannot detect Spanish or other source languages.
+    result = transcribe_audio(Path(sys.argv[2]), None, model.removesuffix(".en"))
     write_json(Path(sys.argv[3]), result)
