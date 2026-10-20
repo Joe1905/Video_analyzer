@@ -298,6 +298,8 @@ class StateHandler(BaseHandler):
             }
 
 
+        current_task.setdefault('batches', obj_demo.plan_batches(current_task.get('sources', [])))
+
         # 3. Materials
         materials = await asyncio.to_thread(get_materials_list)
 
@@ -432,6 +434,7 @@ class ObjectTaskDetailHandler(BaseHandler):
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             data["id"] = job_id
+            data.setdefault('batches', obj_demo.plan_batches(data.get('sources', [])))
             self.write_json(data)
         except Exception as e:
             self.write_json({"error": str(e)}, status=500)

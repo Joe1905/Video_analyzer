@@ -104,6 +104,18 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         wb.obj_demo.save(root/'manifest.json', manifest)
         self.assertEqual(self.post_json('/api/object/analyze', {'job_id':'retry','resume':True}).code, 409)
 
+    def test_legacy_task_previews_batches_without_changing_saved_input(self):
+        root = wb.OBJECT_ROOT/'legacy'
+        root.mkdir()
+        manifest = dict(status='failed', products=[], clips=[], sources=[{'id':'v1','duration':70},{'id':'v2','duration':10}])
+        wb.obj_demo.save(root/'manifest.json', manifest)
+        before = (root/'manifest.json').read_bytes()
+        detail = json.loads(self.fetch('/api/object/task/legacy').body)
+        self.assertEqual(len(detail['batches']), 2)
+        state = json.loads(self.fetch('/api/state').body)
+        self.assertEqual(state['current_task']['batches'], detail['batches'])
+        self.assertEqual((root/'manifest.json').read_bytes(), before)
+
     def test_api_voices(self):
         response = self.fetch("/api/voices")
         self.assertEqual(response.code, 200)
