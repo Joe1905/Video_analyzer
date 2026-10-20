@@ -169,19 +169,27 @@ async def identify(provider, frames, products, log, continuity=False):
             image = ImageOps.exif_transpose(image).convert('RGB')
             image.thumbnail((1024, 1024))
             content.append({'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + provider._image_to_base64(image)}})
-    record = {'status': 'running', 'targets': catalog, 'frames': samples, 'model': provider.model_name}
+    record = {'status': 'running', 'targets': catalog, 'frames': samples, 'model': provider.model_name, 'attempts': []}
     save(log, record)
     started = time.monotonic()
     try:
         async with provider._build_client() as client:
             client.max_retries = 0
-            response = await client.chat.completions.create(model=provider.model_name,
-                messages=[{'role': 'user', 'content': content}], response_format={'type': 'json_object'},
-                **provider._build_chat_completion_options('vision', temperature=0.1, max_tokens=8192, thinking_level='low'))
-        record.update(raw=response.choices[0].message.content or '', finish_reason=response.choices[0].finish_reason,
-                      request_id=getattr(response, '_request_id', None),
-                      usage=response.usage.model_dump() if response.usage else {})
+            # Thinking tokens share the output budget; retry only a truncated batch once.
+            for max_tokens in (8192, 16384):
+                response = await client.chat.completions.create(model=provider.model_name,
+                    messages=[{'role': 'user', 'content': content}], response_format={'type': 'json_object'},
+                    **provider._build_chat_completion_options('vision', temperature=0.1, max_tokens=max_tokens, thinking_level='low'))
+                record.update(raw=response.choices[0].message.content or '', finish_reason=response.choices[0].finish_reason,
+                              request_id=getattr(response, '_request_id', None),
+                              usage=response.usage.model_dump() if response.usage else {})
+                record['attempts'].append({k: record[k] for k in ('finish_reason', 'request_id', 'usage')} | {'max_tokens': max_tokens})
+                if record['finish_reason'] != 'length' or max_tokens == 16384:
+                    break
+                save(log, record)
         if record['finish_reason'] != 'stop':
+            if record['finish_reason'] == 'length':
+                raise ValueError('模型输出达到长度上限，增加额度重试后仍未完成；请稍后重试')
             raise ValueError('模型响应未完整结束')
         result = validate_result(record['raw'], frames, products)
         record['status'] = 'success'
@@ -229,6 +237,20 @@ async def analyze(root, progress=lambda text: None):
         return await _analyze(root, progress)
 
 
+def plan_batches(sources):
+    batches, current, seconds = [], [], 0
+    for source in sources:
+        duration = source['duration']
+        if current and (len(current) >= 3 or seconds + duration > 60):
+            batches.append({'source_ids': current, 'duration': round(seconds, 2), 'status': 'pending'})
+            current, seconds = [], 0
+        current.append(source['id'])
+        seconds += duration
+    if current:
+        batches.append({'source_ids': current, 'duration': round(seconds, 2), 'status': 'pending'})
+    return batches
+
+
 async def _analyze(root, progress):
     path = root / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
@@ -245,38 +267,65 @@ async def _analyze(root, progress):
         if source.get('fingerprint', fingerprint) != fingerprint:
             raise ValueError('原素材已变化，请创建新任务')
         source['fingerprint'] = fingerprint
-    manifest.update(status='running', model=model, clips=[])
+    manifest.update(status='running', model=model)
+    manifest.setdefault('batches', plan_batches(manifest['sources']))
     manifest.pop('archive', None)
+    manifest.pop('export_selected', None)
+    (root / 'export.json').unlink(missing_ok=True)
     save(path, manifest)
     try:
-        for source in manifest['sources']:
-            directory = root / source['id']
-            directory.mkdir(exist_ok=True)
-            frames = coarse_frames(source, manifest['step'], directory)
-            points = []
-            for start in range(0, len(frames), 4):
-                progress(f"扫描 {source['name']}：{min(start+4, len(frames))}/{len(frames)} 帧")
-                points.extend(await identify(provider, frames[start:start+4], manifest['products'], directory / f'coarse-{start}.json'))
-            fine = []
-            for i, at in enumerate(refinement_times(points, manifest['step'], source['duration'])):
-                destination = directory / f'r{i}.jpg'
-                frame_at(source['path'], at, destination)
-                fine.append({'id': f'r{i}', 'time': at, 'path': str(destination)})
-            for start in range(0, len(fine), 4):
-                progress(f"复查 {source['name']}：{min(start+4, len(fine))}/{len(fine)} 帧")
-                points.extend(await identify(provider, fine[start:start+4], manifest['products'], directory / f'refine-{start}.json'))
-            points.sort(key=lambda p: p['time'])
-            await review_continuity(provider, points, manifest['products'], directory, progress)
-            save(directory / 'observations.json', points)
-            manifest['clips'].extend(intervals(points, manifest['products'], source['duration'], source['id']))
+        for index, batch in enumerate(manifest['batches'], 1):
+            if batch['status'] == 'complete':
+                continue
+            batch.update(status='running')
+            batch.pop('error', None)
+            manifest['clips'] = [c for c in manifest['clips'] if c['source_id'] not in batch['source_ids']]
             save(path, manifest)
-        manifest['status'] = 'review'
+            def batch_progress(message):
+                progress(f"第 {index}/{len(manifest['batches'])} 批 · {message}")
+            try:
+                for source in manifest['sources']:
+                    if source['id'] not in batch['source_ids']:
+                        continue
+                    manifest['clips'].extend(await analyze_source(root, source, manifest, provider, batch_progress))
+                    save(path, manifest)
+                batch['status'] = 'complete'
+            except Exception as exc:
+                message = str(exc).replace(provider.api_key, '[REDACTED]') if provider.api_key else str(exc)
+                batch.update(status='failed', error=re.sub(r'sk[-_][\w-]+', '[REDACTED]', message)[:1000])
+            save(path, manifest)
+        failed = sum(b['status'] == 'failed' for b in manifest['batches'])
+        manifest['status'] = 'partial' if failed else 'review'
+        if failed == len(manifest['batches']):
+            manifest['status'] = 'failed'
     except Exception as exc:
         manifest.update(status='failed', error_type=type(exc).__name__)
         raise
     finally:
         save(path, manifest)
     return manifest
+
+
+async def analyze_source(root, source, manifest, provider, progress):
+    directory = root / source['id']
+    directory.mkdir(exist_ok=True)
+    frames = coarse_frames(source, manifest['step'], directory)
+    points = []
+    for start in range(0, len(frames), 4):
+        progress(f"扫描 {source['name']}：{min(start+4, len(frames))}/{len(frames)} 帧")
+        points.extend(await identify(provider, frames[start:start+4], manifest['products'], directory / f'coarse-{start}.json'))
+    fine = []
+    for i, at in enumerate(refinement_times(points, manifest['step'], source['duration'])):
+        destination = directory / f'r{i}.jpg'
+        frame_at(source['path'], at, destination)
+        fine.append({'id': f'r{i}', 'time': at, 'path': str(destination)})
+    for start in range(0, len(fine), 4):
+        progress(f"复查 {source['name']}：{min(start+4, len(fine))}/{len(fine)} 帧")
+        points.extend(await identify(provider, fine[start:start+4], manifest['products'], directory / f'refine-{start}.json'))
+    points.sort(key=lambda p: p['time'])
+    await review_continuity(provider, points, manifest['products'], directory, progress)
+    save(directory / 'observations.json', points)
+    return intervals(points, manifest['products'], source['duration'], source['id'])
 
 
 def export(root, selected, progress=lambda message: None):
@@ -287,7 +336,7 @@ def export(root, selected, progress=lambda message: None):
 def _export(root, selected, progress=lambda message: None):
     path = root / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
-    if manifest['status'] not in ('review', 'complete'):
+    if manifest['status'] not in ('review', 'complete', 'partial'):
         raise ValueError('识别尚未完成，不能导出不完整结果')
     output = root / ('export-' + uuid.uuid4().hex[:8])
     output.mkdir()

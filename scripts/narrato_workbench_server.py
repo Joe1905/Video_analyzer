@@ -437,6 +437,21 @@ class ObjectTaskDetailHandler(BaseHandler):
             self.write_json({"error": str(e)}, status=500)
 
 
+def start_object_worker(root, record):
+    def worker():
+        try:
+            result = asyncio.run(obj_demo.analyze(root, progress=lambda msg: record.update(progress=msg)))
+            status = 'complete' if result['status'] == 'review' else result['status']
+            failed = sum(b['status'] == 'failed' for b in result.get('batches', []))
+            record.update(status=status, progress='识别完成' if not failed else f'{failed} 批未完成，可继续重试',
+                          clips=result['clips'], batches=result.get('batches', []))
+            if failed:
+                record['message'] = f'{failed} 批未完成，已保存成功结果，请继续未完成批次'
+        except Exception as exc:
+            record.update(status='error', message=str(exc))
+    threading.Thread(target=worker, daemon=True).start()
+
+
 class ObjectAnalyzeHandler(BaseHandler):
     """Start once; never rewrite a running task or reuse changed-input caches."""
     async def post(self):
@@ -450,7 +465,18 @@ class ObjectAnalyzeHandler(BaseHandler):
             self.write_json({'job_id': job_id, 'status': 'running'})
             return
         if root.exists():
-            raise tornado.web.HTTPError(409, '此任务已有记录，请新建任务后识别')
+            if body.get('resume') is not True:
+                raise tornado.web.HTTPError(409, '此任务已有记录，请新建任务后识别')
+            manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+            if manifest.get('status') not in ('failed', 'partial', 'running', 'pending') or job_id in EXPORT_JOBS:
+                raise tornado.web.HTTPError(409, '当前任务不支持续跑或正在导出')
+            if manifest.get('expires_at', float('inf')) <= time.time():
+                raise tornado.web.HTTPError(410, '任务已过期，请新建任务')
+            record = {'status': 'running', 'progress': '正在恢复未完成批次', 'clips': manifest.get('clips', [])}
+            ACTIVE_JOBS[job_id] = record
+            start_object_worker(root, record)
+            self.write_json({'job_id': job_id, 'status': 'started'})
+            return
         step = body.get('step', 0.5)
         if step not in (0.25, 0.5, 1):
             raise tornado.web.HTTPError(400, '无效采样间隔')
@@ -483,13 +509,7 @@ class ObjectAnalyzeHandler(BaseHandler):
             ACTIVE_JOBS.pop(job_id, None)
             raise
 
-        def worker():
-            try:
-                result = asyncio.run(obj_demo.analyze(root, progress=lambda msg: record.update(progress=msg)))
-                record.update(status='complete', progress='识别完成', clips=result['clips'])
-            except Exception as exc:
-                record.update(status='error', message=str(exc))
-        threading.Thread(target=worker, daemon=True).start()
+        start_object_worker(root, record)
         self.write_json({'job_id': job_id, 'status': 'started'})
 
 
@@ -514,6 +534,10 @@ class ObjectStatusHandler(BaseHandler):
                     status_info = {"status": "unknown", "progress": ""}
             else:
                 status_info = {"status": "not_found", "progress": ""}
+        manifest_path = OBJECT_ROOT / job_id / 'manifest.json'
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            status_info = dict(status_info, batches=manifest.get('batches', []), clips=manifest.get('clips', []))
         self.write_json(status_info)
 
 
@@ -1121,6 +1145,9 @@ RENDERED_HTML = '''<!DOCTYPE html>
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           <span id="start-analysis-text">开始智能识别切片</span>
         </button>
+        <p class="text-[11px] text-slate-500 leading-relaxed">按素材数量和时长自动分批，每批最多 3 条或累计 60 秒；超过 60 秒的视频单独处理。各批结果自动保存。</p>
+        <div id="analysis-batches" role="status" aria-live="polite" class="text-xs text-slate-600 flex flex-col gap-1.5"></div>
+        <button id="resume-analysis-btn" onclick="startAnalysis(true)" class="hidden w-full py-2 rounded-xl border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50">继续未完成批次</button>
       </div>
     </section>
 
@@ -1406,6 +1433,21 @@ RENDERED_HTML = '''<!DOCTYPE html>
       nameElem.innerText = task && task.status !== 'pending'
         ? (task.products || []).map(p => p.name).filter(Boolean).join(' / ') || '识别任务'
         : '新建任务';
+      renderBatchStatus(task);
+    }
+
+    function renderBatchStatus(task) {
+      const list = document.getElementById('analysis-batches');
+      list.replaceChildren();
+      const labels = {pending:'等待处理', running:'处理中', complete:'已完成', failed:'未完成'};
+      (task && task.batches || []).forEach((batch, index) => {
+        const row = document.createElement('div');
+        row.textContent = `第 ${index + 1} 批 · ${batch.source_ids.length} 条 · ${batch.duration}s · ${labels[batch.status] || batch.status}`;
+        if (batch.error) { row.title = batch.error; row.className = 'text-amber-700'; }
+        list.appendChild(row);
+      });
+      const resumable = task && ['failed', 'partial', 'running', 'pending'].includes(task.status) && (task.sources || []).length > 0;
+      document.getElementById('resume-analysis-btn').classList.toggle('hidden', !resumable);
     }
 
     function restoreTaskMaterials() {
@@ -1738,7 +1780,10 @@ RENDERED_HTML = '''<!DOCTYPE html>
       btn.className = 'px-2.5 py-1 bg-white text-slate-900 font-bold rounded shadow-2xs';
     }
 
-    async function startAnalysis() {
+    async function startAnalysis(resume = false) {
+      if (appState.analysisRunning) return;
+      appState.analysisRunning = true;
+      document.getElementById('resume-analysis-btn').disabled = true;
       const btn = document.getElementById('start-analysis-btn');
       const txt = document.getElementById('start-analysis-text');
       txt.innerText = 'AI 扫描比对中...';
@@ -1751,6 +1796,7 @@ RENDERED_HTML = '''<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             job_id: appState.currentTask ? appState.currentTask.id : '',
+            resume: resume,
             step: appState.step,
             sources: appState.materials.map(m => m.path),
             products: appState.currentTask ? appState.currentTask.products : []
@@ -1781,16 +1827,21 @@ RENDERED_HTML = '''<!DOCTYPE html>
             if (sData.progress) {
               txt.innerText = sData.progress;
             }
-            if (sData.status === 'complete' || sData.status === 'review') {
+            if (appState.currentTask && appState.currentTask.id === activeJobId) renderBatchStatus({...appState.currentTask, ...sData});
+            if (sData.status === 'complete' || sData.status === 'review' || sData.status === 'partial') {
               clearInterval(pollInterval);
+              appState.analysisRunning = false;
+              document.getElementById('resume-analysis-btn').disabled = false;
               txt.innerText = '开始智能识别切片';
               btn.classList.remove('opacity-75');
               btn.style.pointerEvents = 'auto';
-              await selectTask(activeJobId);
+              if (appState.currentTask && appState.currentTask.id === activeJobId) await selectTask(activeJobId);
               const clipsCount = (sData.clips && sData.clips.length) ? sData.clips.length : 0;
-              alert('识别切片已完成！共发现 ' + clipsCount + ' 个目标命中片段');
+              alert(sData.status === 'partial' ? '部分批次未完成，已保存成功结果，可继续未完成批次。' : '识别切片已完成！共发现 ' + clipsCount + ' 个目标命中片段');
             } else if (sData.status === 'error' || sData.status === 'failed') {
               clearInterval(pollInterval);
+              appState.analysisRunning = false;
+              document.getElementById('resume-analysis-btn').disabled = false;
               txt.innerText = '开始智能识别切片';
               btn.classList.remove('opacity-75');
               btn.style.pointerEvents = 'auto';
@@ -1799,6 +1850,8 @@ RENDERED_HTML = '''<!DOCTYPE html>
           } catch (_) {}
         }, 1500);
       } catch (e) {
+        appState.analysisRunning = false;
+        document.getElementById('resume-analysis-btn').disabled = false;
         txt.innerText = '开始智能识别切片';
         btn.classList.remove('opacity-75');
         btn.style.pointerEvents = 'auto';

@@ -81,6 +81,29 @@ class WorkbenchServerTestCase(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("voices", data)
         self.assertIn("auto_tasks", data)
 
+    def test_batch_resume_preserves_inputs_and_rejects_expired_tasks(self):
+        root = wb.OBJECT_ROOT/'retry'
+        root.mkdir()
+        manifest = dict(status='partial', products=[{'id':'p1','name':'original'}], sources=[], step=.5,
+                        clips=[], batches=[{'source_ids':['v1'], 'duration':70, 'status':'failed'}])
+        wb.obj_demo.save(root/'manifest.json', manifest)
+        self.assertEqual(self.post_json('/api/object/analyze', {'job_id':'retry'}).code, 409)
+        with patch.object(wb, 'start_object_worker') as worker:
+            response = self.post_json('/api/object/analyze', {'job_id':'retry','resume':True,'products':[],'sources':['changed']})
+            self.assertEqual(response.code, 200, response.body)
+            self.assertEqual(json.loads((root/'manifest.json').read_text()), manifest)
+            self.assertEqual(worker.call_args.args[0], root)
+            self.assertEqual(json.loads(self.fetch('/api/object/status/retry').body)['batches'], manifest['batches'])
+            self.post_json('/api/object/analyze', {'job_id':'retry','resume':True})
+            self.assertEqual(worker.call_count, 1)
+        wb.ACTIVE_JOBS.clear()
+        manifest['expires_at'] = time.time() - 1
+        wb.obj_demo.save(root/'manifest.json', manifest)
+        self.assertEqual(self.post_json('/api/object/analyze', {'job_id':'retry','resume':True}).code, 410)
+        manifest.update(status='review', expires_at=time.time()+3600)
+        wb.obj_demo.save(root/'manifest.json', manifest)
+        self.assertEqual(self.post_json('/api/object/analyze', {'job_id':'retry','resume':True}).code, 409)
+
     def test_api_voices(self):
         response = self.fetch("/api/voices")
         self.assertEqual(response.code, 200)

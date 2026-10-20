@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
 
 from PIL import Image, ImageDraw
@@ -89,7 +90,7 @@ def checks(root):
         assert not history_app.exception and not video.called
         next(b for b in history_app.button if b.label == '播放此片段').click().run()
         assert not history_app.exception and video.called
-    # Confirm references and every target frame share one request, and truncation stops the task.
+    # A truncated batch gets one larger budget, without accepting incomplete output.
     class Response:
         choices = [type('Choice', (), {'finish_reason': 'length', 'message': type('Message', (), {'content': '{}'})()})()]
         usage = None
@@ -106,8 +107,78 @@ def checks(root):
     content = client.chat.completions.create.call_args.kwargs['messages'][0]['content']
     assert client.chat.completions.create.call_args.kwargs['extra_body']['reasoning_effort'] == 'low'
     assert len(content) == 5 and 'reference_image_numbers' in content[0]['text']
-    assert json.loads((root/'truncated.json').read_text())['status'] == 'failed'
+    failed = json.loads((root/'truncated.json').read_text())
+    assert failed['status'] == 'failed' and '长度上限' in failed['error']
+    assert [call.kwargs['max_tokens'] for call in client.chat.completions.create.call_args_list] == [8192, 16384]
+    assert [a['max_tokens'] for a in failed['attempts']] == [8192, 16384]
+    assert client.chat.completions.create.call_args_list[0].kwargs['messages'] == client.chat.completions.create.call_args_list[1].kwargs['messages']
+    valid_raw = json.dumps({'frames': result['frames'][:2]})
+    success = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=valid_raw))], usage=None)
+    client.reset_mock()
+    client.chat.completions.create.side_effect = [Response(), success]
+    recovered_log = root/'recovered.json'
+    with patch.object(provider, '_build_client', return_value=client):
+        recovered = asyncio.run(d.identify(provider, frames[:2], manifest['products'], recovered_log))
+        assert len(recovered) == 2 and recovered[0]['objects'] == points[0]['objects']
+        assert client.chat.completions.create.call_count == 2
+        assert json.loads(recovered_log.read_text())['status'] == 'success'
+        assert asyncio.run(d.identify(provider, frames[:2], manifest['products'], recovered_log)) == recovered
+        assert client.chat.completions.create.call_count == 2  # Successful batches stay cached.
+    for reason, raw in [('content_filter', valid_raw), ('stop', '{"frames":[]}')]:
+        client.reset_mock()
+        client.chat.completions.create.side_effect = None
+        client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(finish_reason=reason, message=SimpleNamespace(content=raw))], usage=None)
+        with patch.object(provider, '_build_client', return_value=client):
+            try:
+                asyncio.run(d.identify(provider, frames[:2], manifest['products'], root/f'invalid-{reason}.json'))
+                raise AssertionError('Invalid response accepted')
+            except ValueError:
+                pass
+        assert client.chat.completions.create.call_count == 1
     print('PASS: multiple targets, interval gaps/overlap, schema rejection, export, UI and reference payload')
+
+
+def batch_checks(root):
+    root.mkdir()
+    sources = [dict(id=f'v{i}', duration=duration) for i, duration in enumerate([8, 8, 8, 40, 80, 10])]
+    batches = d.plan_batches(sources)
+    assert [len(b['source_ids']) for b in batches] == [3, 1, 1, 1]
+    assert [b['duration'] for b in batches] == [24, 40, 80, 10]
+    assert [sid for b in batches for sid in b['source_ids']] == [s['id'] for s in sources]
+    video = root/'material.mp4'
+    video.write_bytes(b'fixture')
+    sources = [dict(id=f'v{i}', path=str(video), duration=60, name=f'video{i}') for i in range(3)]
+    d.save(root/'manifest.json', dict(status='pending', sources=sources, products=[], step=.5, clips=[]))
+    calls = []
+    async def analyze_source(root, source, manifest, provider, progress):
+        calls.append(source['id'])
+        progress(source['name'])
+        if source['id'] == 'v1' and calls.count('v1') == 1:
+            raise ValueError('truncated')
+        return [dict(source_id=source['id'], product_id='p1', start=0, end=1, status='present', evidence=[])]
+    messages = []
+    with patch.dict(d.config.app, {'vision_openai_api_key':'test', 'vision_openai_model_name':'deepseek-test-vision'}), patch.object(d, 'analyze_source', side_effect=analyze_source):
+        result = asyncio.run(d.analyze(root, messages.append))
+        assert result['status'] == 'partial'
+        assert [b['status'] for b in result['batches']] == ['complete', 'failed', 'complete']
+        assert {c['source_id'] for c in result['clips']} == {'v0', 'v2'}
+        d.save(root/'export.json', {'status':'complete'})
+        resumed = asyncio.run(d.analyze(root, messages.append))
+        assert resumed['status'] == 'review'
+        assert calls == ['v0', 'v1', 'v2', 'v1'], calls
+        assert len(resumed['clips']) == 3 and len({c['source_id'] for c in resumed['clips']}) == 3
+        assert not (root/'export.json').exists()
+        assert all(b['status'] == 'complete' for b in resumed['batches'])
+        assert any('第 2/3 批' in msg for msg in messages)
+        before = (root/'manifest.json').read_bytes()
+        video.write_bytes(b'changed-fixture')
+        try:
+            asyncio.run(d.analyze(root))
+            raise AssertionError('Changed input accepted')
+        except ValueError:
+            pass
+        assert (root/'manifest.json').read_bytes() == before
+    print('PASS: automatic duration/count batching, failure isolation, retry skips completed batches and preserves input boundaries')
 
 
 if __name__ == '__main__':
@@ -147,3 +218,4 @@ if __name__ == '__main__':
     else:
         with TemporaryDirectory() as directory:
             checks(Path(directory))
+            batch_checks(Path(directory)/'batches')
