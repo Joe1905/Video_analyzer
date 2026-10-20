@@ -122,6 +122,17 @@ class PublishingTests(unittest.TestCase):
             publish.start_worker()
         self.assertEqual(publish.get_job(job["id"])["state"], "uncertain")
 
+    def test_worker_and_recovery_are_not_limited_by_ui_history(self):
+        with publish.db() as conn:
+            for index in range(105):
+                item = {"id": str(index), "state": "submitting", "logs": []}
+                conn.execute("INSERT INTO jobs VALUES (?,?,?,?,?)", (str(index), str(index), item["state"], json.dumps(item), time.time()))
+        self.assertEqual(len(publish.jobs()), 100)
+        self.assertEqual(len(publish.jobs({"submitting"})), 105)
+        with patch.object(publish, "_started", False), patch.object(publish.threading, "Thread"):
+            publish.start_worker()
+        self.assertEqual(len(publish.jobs({"uncertain"})), 105)
+
     def test_graphql_http_200_errors_are_not_success(self):
         response = Mock(status_code=200)
         response.json.return_value = {"errors": [{"message": "write may have happened"}]}

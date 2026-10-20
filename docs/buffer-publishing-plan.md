@@ -34,6 +34,7 @@ Windows developer → GitHub → 4003 /home/openclaw/Video_analyzer-dev；远程
 - 桌面浏览器：页面、草稿/定时切换、连接弹窗的存储状态通过；控制台 error/warn 为空。未验证手机视口。
 - 当前开发分支缺少 AGENTS.md 提到的 `scripts/test_ui_contract.py`，没有补造该检查；采用以上专用测试与浏览器检查。
 - 需用户稍后配置：Buffer个人Key、已授权TikTok频道。真实草稿→定时→sent链路仍待验证。视频默认长期保留，服务器带宽套餐/流量配额尚未核实。
+- 后续检查增加第21项：后台扫描和重启恢复不受前端最近100条记录的限制。
 
 ## 官方接口判断
 

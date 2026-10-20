@@ -177,9 +177,14 @@ def save(job, state=None, message=None):
     return job
 
 
-def jobs():
+def jobs(states=None):
     with db() as conn:
-        return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM jobs ORDER BY updated DESC LIMIT 100")]
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            rows = conn.execute(f"SELECT payload FROM jobs WHERE state IN ({placeholders}) ORDER BY updated", tuple(states))
+        else:
+            rows = conn.execute("SELECT payload FROM jobs ORDER BY updated DESC LIMIT 100")
+        return [json.loads(row[0]) for row in rows]
 
 
 def asset(asset_id):
@@ -351,7 +356,7 @@ def cancel(job_id):
 
 def worker_tick():
     # One worker owns submissions. API cancellation and worker claims share the lock.
-    for item in jobs():
+    for item in jobs({"queued", "scheduled", "sending"}):
         if item["state"] == "queued":
             with _lock:
                 item = get_job(item["id"])
@@ -381,7 +386,7 @@ def start_worker():
     if _started:
         return
     _started = True
-    for item in jobs():
+    for item in jobs({"submitting", "cancelling", "uploading"}):
         if item["state"] in {"submitting", "cancelling"}:
             save(item, "uncertain", "服务重启时请求结果未知，未自动重发，请到 Buffer 核对")
         elif item["state"] == "uploading":
