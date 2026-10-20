@@ -113,6 +113,7 @@ class PublishingTests(unittest.TestCase):
             with self.assertRaises(publish.PublishError):
                 publish.cancel(job["id"])
             self.assertEqual(api.call_count, 1)
+            self.assertEqual(publish.get_job(job["id"])["state"], "sent")
 
     def test_restart_does_not_replay_ambiguous_submission(self):
         job = self.create()

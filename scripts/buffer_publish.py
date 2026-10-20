@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -269,9 +270,10 @@ def upload_media(job):
         receipt = response.json()
         if receipt.get("sha256") != meta["sha256"] or receipt.get("size") != meta["size"]:
             raise PublishError("远程视频校验失败")
-        check = session.get(target, headers={"Range": "bytes=0-31"}, timeout=(10, 20), allow_redirects=False)
-        if check.status_code != 206 or len(check.content) != 32 or check.headers.get("Content-Type", "").split(";")[0] != "video/mp4":
-            raise PublishError("远程视频未通过公开读取验证")
+        with session.get(target, headers={"Range": "bytes=0-31"}, timeout=(10, 20), allow_redirects=False, stream=True) as check:
+            if (check.status_code != 206 or check.headers.get("Content-Type", "").split(";")[0] != "video/mp4"
+                    or check.headers.get("Content-Length") != "32" or len(check.raw.read(33)) != 32):
+                raise PublishError("远程视频未通过公开读取验证")
         return target
     except requests.RequestException as exc:
         raise PublishError("远程存储连接失败，视频未提交 Buffer") from exc
@@ -330,6 +332,8 @@ def cancel(job_id):
             raise PublishError("当前状态不能取消，请先刷新状态；结果待确认时请到 Buffer 核对")
         post = graphql("query Status($id: PostId!) { post(input: {id: $id}) { " + POST_FIELDS + " } }", {"id": job["post_id"]})["post"]
         if not post or post["status"] not in {"scheduled", "draft", "needs_approval"} or "deletePost" not in post["allowedActions"]:
+            if post:
+                apply_post(job, post)
             raise PublishError("任务可能已开始发布，无法取消，请刷新状态")
         save(job, "cancelling", "正在从 Buffer 移除待发布任务")
         try:
@@ -439,6 +443,9 @@ def handle(handler, parsed):
             name = parse_qs(parsed.query).get("name", ["video.mp4"])[0][:200]
             handler.connection.settimeout(180)
             VIDEOS.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(VIDEOS).free < length + 1024 ** 3:
+                handler.close_connection = True
+                raise PublishError("视频存储空间不足，请清理后重试")
             video_id = uuid.uuid4().hex
             path = VIDEOS / (video_id + ".mp4")
             digest = hashlib.sha256()

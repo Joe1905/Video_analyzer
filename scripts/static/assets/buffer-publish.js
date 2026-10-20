@@ -24,6 +24,7 @@
   }
   function ready() {
     $('submit').disabled = state.busy || !state.asset || !$('channel').value || !state.status?.buffer_configured || !state.status?.media_configured;
+    $('videoFile').disabled = state.busy;
   }
   async function loadStatus() {
     state.status = await api('status');
@@ -52,7 +53,7 @@
     $('jobs').innerHTML=filtered.length ? filtered.map(j=>`<article class="job"><div class="job-top"><strong>${esc(j.channel_name)}</strong><span class="badge ${esc(j.state)}">${esc(names[j.state]||j.state)}</span></div><p>${esc(j.text.length>150?j.text.slice(0,150)+'…':j.text)}</p><div class="job-foot"><span>${j.due_at?'计划 '+format(j.due_at):j.mode==='draft'?'存入草稿 · '+format(j.created):'立即发布 · '+format(j.created)}</span><div class="job-actions"><button data-action="report" data-id="${j.id}">查看日志</button>${j.post_id&&!['cancelled','cancelling','submitting'].includes(j.state)?`<button data-action="refresh" data-id="${j.id}">查状态</button>`:''}${['queued','draft','scheduled','needs_approval'].includes(j.state)?`<button data-action="cancel" data-id="${j.id}">取消</button>`:''}</div></div></article>`).join('') : '<div class="empty"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5M8 16h3"/></svg><strong>暂无发布记录</strong><span>创建任务后，在这里查看进度和日志</span></div>';
     if($('report').open && $('report').dataset.jobId) showReport($('report').dataset.jobId, false);
   }
-  async function loadJobs() {state.jobs=(await api('jobs')).jobs;renderJobs();}
+  async function loadJobs() {state.jobs=(await api('jobs')).jobs;$('listError').textContent='';renderJobs();}
   function showReport(id, open=true) {
     const j=state.jobs.find(item=>item.id===id);if(!j)return;
     $('report').dataset.jobId=id;
