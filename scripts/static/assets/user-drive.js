@@ -15,7 +15,7 @@
     <div class="ud-progress" data-progress hidden><div class="ud-progress-line"><span class="ud-progress-name" data-progress-name></span><span class="ud-percent" data-percent>0%</span><button class="ud-icon-btn" data-cancel-upload aria-label="取消上传">${icon('close')}</button></div><progress max="100" value="0" aria-label="文件上传进度"></progress><div class="ud-progress-note" data-progress-note></div></div>
     <div class="ud-tools"><div class="ud-tabs" aria-label="文件类型"><button class="ud-tab" data-filter="all" aria-pressed="true">全部文件</button><button class="ud-tab" data-filter="video" aria-pressed="false">视频</button><button class="ud-tab" data-filter="other" aria-pressed="false">其他</button></div><label class="ud-search">${icon('search')}<input type="search" placeholder="搜索文件名" aria-label="搜索网盘文件"></label><button class="ud-icon-btn" data-refresh aria-label="刷新文件列表">${icon('refresh')}</button></div>
     <div class="ud-notice" data-notice role="status" hidden></div><p class="ud-count" data-count></p>
-    <div class="ud-bulk" data-bulk hidden><label class="ud-check-all"><input type="checkbox" data-select-all>全选当前列表</label><span data-selection-count role="status">未选择文件</span><div class="ud-bulk-actions"><button class="ud-btn" data-clear-selection disabled>取消选择</button><button class="ud-btn ud-danger" data-delete-selection disabled>删除所选</button></div></div>
+    <div class="ud-bulk" data-bulk hidden><span data-selection-count role="status">未选择文件</span><div class="ud-bulk-actions"><label class="ud-zip-option"><input type="checkbox" data-download-zip>ZIP 打包</label><button class="ud-btn" data-download-selection disabled>下载所选</button><button class="ud-btn ud-danger" data-delete-selection disabled>删除所选</button><details class="ud-menu" data-selection-menu><summary class="ud-btn">更多 ▾</summary><div class="ud-menu-items"><button data-select-all disabled>全选当前列表</button><button data-clear-selection disabled>取消选择</button></div></details></div></div>
     <div class="ud-confirm ud-bulk-confirm" data-bulk-confirm hidden><span data-bulk-confirm-note></span><button class="ud-btn" data-keep-selection>取消</button><button class="ud-btn ud-danger" data-confirm-selection>确认删除</button></div>
     <div class="ud-table-head" aria-hidden="true"><span>文件名称</span><span>大小</span><span>剩余时间</span><span data-action-title>操作</span></div><div class="ud-files" data-files></div></div>
     <div class="ud-footer"><span class="ud-footer-note" data-footer-note>临时存放，轻装流转。重要文件请另行备份。</span><div class="ud-footer-actions"><button class="ud-btn" data-done>完成</button><button class="ud-btn ud-primary" data-use hidden disabled>使用此视频</button></div></div>`;
@@ -36,19 +36,31 @@
   function closePreview() { const media = preview.querySelector('video'); media.pause(); media.removeAttribute('src'); media.load(); preview.close(); }
   preview.querySelector('button').onclick = closePreview;
   preview.oncancel = event => { event.preventDefault(); closePreview(); };
-  let selectVideo = null, ownerToken = '', files = [], filter = 'all', selected = '', pendingDelete = '', busy = false, xhr = null, cancelled = false, generation = 0, authenticated = false;
+  let selectVideo = null, ownerToken = '', files = [], filter = 'all', selected = '', pendingDelete = '', busy = false, xhr = null, cancelled = false, generation = 0, authenticated = false, downloadAbort = null;
   const checkedFiles = new Set();
+  const canChooseDirectory = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
+  $('[data-download-zip]').checked = !canChooseDirectory;
+  $('.ud-zip-option').title = canChooseDirectory ? '不勾选时，选择文件夹保存所选文件' : '当前浏览器仅支持 ZIP 打包下载';
   function updateSelection() {
     const inputs = [...dialog.querySelectorAll('[data-select-file]')];
     inputs.forEach(input => { input.checked = checkedFiles.has(input.value); input.disabled = busy; input.closest('[data-id]').classList.toggle('ud-selected', input.checked); });
     const all = $('[data-select-all]'), count = inputs.filter(input => input.checked).length;
-    all.checked = count > 0 && count === inputs.length; all.indeterminate = count > 0 && count < inputs.length; all.disabled = busy || !authenticated || !inputs.length;
+    all.textContent = count > 0 && count === inputs.length ? '取消全选' : '全选当前列表'; all.disabled = busy || !authenticated || !inputs.length;
     const picked = files.filter(file => checkedFiles.has(file.id));
     $('[data-selection-count]').textContent = picked.length ? `已选 ${picked.length} 个 · ${size(picked.reduce((sum, file) => sum + file.size, 0))}` : '未选择文件';
-    $('[data-clear-selection]').disabled = $('[data-delete-selection]').disabled = busy || !authenticated || !picked.length;
+    const disabled = busy || !authenticated || !picked.length;
+    $('[data-clear-selection]').disabled = $('[data-delete-selection]').disabled = $('[data-download-selection]').disabled = disabled;
+    $('[data-download-zip]').disabled = busy || !canChooseDirectory;
     $('[data-bulk]').hidden = Boolean(selectVideo);
   }
   function notice(message = '', error = false) { $('[data-notice]').hidden = !message; $('[data-notice]').textContent = message; $('[data-notice]').classList.toggle('ud-error', error); }
+  function closeMenus() { dialog.querySelectorAll('.ud-menu').forEach(menu => { menu.open = false; }); }
+  dialog.querySelectorAll('.ud-menu').forEach(menu => {
+    menu.querySelector('summary').onclick = event => { if (busy || event.currentTarget.getAttribute('aria-disabled') === 'true') event.preventDefault(); };
+    menu.onkeydown = event => { if (event.key === 'Escape' && menu.open) { event.preventDefault(); event.stopPropagation(); menu.open = false; menu.querySelector('summary').focus(); } };
+    menu.ontoggle = () => { if (menu.open) dialog.querySelectorAll('.ud-menu').forEach(other => { if (other !== menu) other.open = false; }); };
+  });
+  document.addEventListener('click', event => { dialog.querySelectorAll('.ud-menu[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; }); });
   function ensureOwner() { if (!ownerToken || ownerToken !== token()) throw new Error('请先在邻聊选择账户，或重新打开网盘。'); }
   async function request(path, options = {}) {
     ensureOwner(); const session = ownerToken;
@@ -117,7 +129,7 @@
   }
   dialog.addEventListener('close', () => { stopThumbnails(); thumbnailCache.clear(); });
   function render() {
-    stopThumbnails();
+    stopThumbnails(); closeMenus();
     const query = $('input[type=search]').value.trim().toLowerCase();
     const eligible = files.filter(f => !selectVideo || (video(f) && f.size <= 2 * 1024 ** 3));
     const visible = eligible.filter(f => (filter === 'all' || (filter === 'video' ? video(f) : !video(f))) && f.name.toLowerCase().includes(query));
@@ -182,7 +194,8 @@
   async function uploadFiles(list) {
     if (busy || !authenticated || selectVideo || !list.length) return;
     busy = true; cancelled = false; $('[data-upload]').disabled = true; $('[data-input]').disabled = true; $('[data-progress]').hidden = false; notice();
-    $('[data-bulk-confirm]').hidden = true; updateSelection();
+    $('[data-bulk-confirm]').hidden = true; closeMenus(); updateSelection();
+    $('[data-cancel-upload]').setAttribute('aria-label', '取消上传'); $('progress').setAttribute('aria-label', '文件上传进度');
     let completed = 0, failed = 0;
     const errors = [];
     try {
@@ -200,7 +213,7 @@
   }
   $('[data-upload]').onclick = () => $('[data-input]').click();
   $('[data-input]').onchange = event => uploadFiles([...event.target.files]);
-  $('[data-cancel-upload]').onclick = () => { cancelled = true; xhr?.abort(); };
+  $('[data-cancel-upload]').onclick = () => { cancelled = true; xhr?.abort(); downloadAbort?.abort(); };
   const drop = $('[data-drop]');
   drop.ondragover = event => { event.preventDefault(); if (!busy) drop.classList.add('ud-dragging'); };
   drop.ondragleave = () => drop.classList.remove('ud-dragging');
@@ -208,12 +221,74 @@
   dialog.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => { filter = button.dataset.filter; dialog.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); render(); });
   $('input[type=search]').oninput = render;
   $('[data-refresh]').onclick = () => { notice(); refresh(); };
-  $('[data-select-all]').onchange = event => {
+  $('[data-select-all]').onclick = () => {
     if (busy) return;
-    dialog.querySelectorAll('[data-select-file]').forEach(input => { if (event.target.checked) checkedFiles.add(input.value); else checkedFiles.delete(input.value); });
-    $('[data-bulk-confirm]').hidden = true; updateSelection();
+    const inputs = [...dialog.querySelectorAll('[data-select-file]')], all = inputs.every(input => checkedFiles.has(input.value));
+    inputs.forEach(input => { if (!all) checkedFiles.add(input.value); else checkedFiles.delete(input.value); });
+    $('[data-bulk-confirm]').hidden = true; closeMenus(); updateSelection();
   };
-  $('[data-clear-selection]').onclick = () => { checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; updateSelection(); };
+  $('[data-clear-selection]').onclick = () => { checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; closeMenus(); updateSelection(); };
+  function submitDownload(path, values) {
+    ensureOwner();
+    const form = document.createElement('form'); form.method = 'POST'; form.target = '_blank'; form.action = path;
+    for (const [name, value] of [['token', ownerToken], ...values]) { const input = document.createElement('input'); input.type = 'hidden'; input.name = name; input.value = value; form.append(input); }
+    document.body.append(form); form.submit(); form.remove();
+  }
+  function downloadArchive(fallback = false) {
+    if (busy || !checkedFiles.size) return;
+    try {
+      if (checkedFiles.size > 1000) throw new Error('单次最多打包 1000 个文件，请分批下载。');
+      closeMenus();
+      submitDownload('/api/lan-chat/drive/download', [...checkedFiles].map(id => ['file_ids', id]));
+      notice(fallback ? '当前浏览器无法直接选择文件夹，已改为 ZIP 打包下载。下载后可在系统文件管理器中移动或解压到目标文件夹。' : `已发起 ${checkedFiles.size} 个文件的 ZIP 下载，请在浏览器下载列表中查看。`);
+    } catch (error) { notice(error.message, true); }
+  }
+  async function downloadToDirectory() {
+    if (busy || !checkedFiles.size) return;
+    if (!window.isSecureContext || typeof window.showDirectoryPicker !== 'function') { downloadArchive(true); return; }
+    const picked = files.filter(file => checkedFiles.has(file.id)), session = ownerToken, used = new Set();
+    let completed = 0, directory = null;
+    const errors = [];
+    busy = true; cancelled = false; closeMenus(); updateSelection();
+    $('[data-upload]').disabled = $('[data-input]').disabled = true;
+    downloadAbort = new AbortController();
+    try {
+      const parent = await window.showDirectoryPicker({mode:'readwrite'});
+      ensureOwner();
+      directory = await parent.getDirectoryHandle(`云盘文件-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, {create:true});
+      $('[data-progress]').hidden = false;
+      $('[data-cancel-upload]').setAttribute('aria-label', '取消下载'); $('progress').setAttribute('aria-label', '文件下载进度');
+      for (const [index, file] of picked.entries()) {
+        ensureOwner(); if (cancelled) break;
+        let name = file.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[ .]+$/, '') || 'file';
+        if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)) name = '_' + name;
+        const dot = name.lastIndexOf('.'), stem = dot > 0 ? name.slice(0, dot) : name, extension = dot > 0 ? name.slice(dot) : '';
+        let candidate = name, duplicate = 1;
+        while (used.has(candidate.toLowerCase())) candidate = `${stem} (${++duplicate})${extension}`;
+        used.add(candidate.toLowerCase());
+        $('[data-progress-name]').textContent = file.name;
+        $('[data-progress-note]').textContent = `第 ${index + 1} / ${picked.length} 个 · 保存到 ${directory.name} · 下载时请勿关闭页面`;
+        $('progress').value = index / picked.length * 100; $('[data-percent]').textContent = `${index} / ${picked.length} 个`;
+        try {
+          const response = await fetch(`/api/lan-chat/drive/${file.id}/download`, {method:'POST', headers:{'X-Lan-Chat-Token':session}, body:new URLSearchParams({token:session}), signal:downloadAbort.signal});
+          ensureOwner();
+          if (!response.ok) { const result = await response.json(); throw new Error(result.error || '下载失败，请重试。'); }
+          const handle = await directory.getFileHandle(candidate, {create:true});
+          const writable = await handle.createWritable();
+          await response.body.pipeTo(writable, {signal:downloadAbort.signal});
+          completed++; $('progress').value = (index + 1) / picked.length * 100; $('[data-percent]').textContent = `${index + 1} / ${picked.length} 个`;
+        } catch (error) { await directory.removeEntry(candidate).catch(() => {}); if (cancelled) break; ensureOwner(); errors.push(`${file.name}：${error.message}`); }
+      }
+    } catch (error) { if (error.name !== 'AbortError') errors.push(error.message); }
+    finally {
+      downloadAbort = null; busy = false; $('[data-progress]').hidden = true; $('[data-input]').disabled = false; $('[data-upload]').disabled = !authenticated;
+      if (session === ownerToken && session === token()) {
+        updateSelection();
+        if (directory || errors.length) notice(`已保存 ${completed} 个文件${cancelled ? '，下载已取消' : directory ? `到 ${directory.name}` : ''}。${errors.join(' ')}`, errors.length > 0);
+      } else if (mount && token()) await window.openUserDrive();
+    }
+  }
+  $('[data-download-selection]').onclick = () => { if ($('[data-download-zip]').checked) downloadArchive(); else downloadToDirectory(); };
   $('[data-delete-selection]').onclick = () => {
     if (busy || !checkedFiles.size) return;
     pendingDelete = ''; render();
@@ -265,8 +340,7 @@
       if (event.target.closest('[data-keep]')) { pendingDelete = ''; render(); return; }
       if (event.target.closest('[data-confirm-delete]')) { event.target.disabled = true; await request(`/api/lan-chat/drive/${row.dataset.id}/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); pendingDelete = ''; await refresh(); notice('文件已删除。'); }
       if (event.target.closest('[data-download]')) {
-        const form = document.createElement('form'); form.method = 'POST'; form.target = '_blank'; form.action = `/api/lan-chat/drive/${row.dataset.id}/download`;
-        const input = document.createElement('input'); input.type = 'hidden'; input.name = 'token'; input.value = ownerToken; form.append(input); document.body.append(form); form.submit(); form.remove();
+        submitDownload(`/api/lan-chat/drive/${row.dataset.id}/download`, []);
       }
     } catch (error) { notice(error.message, true); }
   };
@@ -283,7 +357,7 @@
   dialog.oncancel = event => { if (event.target !== dialog) return; event.preventDefault(); close(); };
   window.openUserDrive = async callback => {
     if (busy) return;
-    stopThumbnails(); thumbnailCache.clear();
+    stopThumbnails(); thumbnailCache.clear(); closeMenus();
     selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
     checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; updateSelection();
     dialog.classList.toggle('ud-picker', Boolean(selectVideo));
@@ -299,7 +373,7 @@
     if (!dialog.open) { if (mount) dialog.setAttribute('open', ''); else dialog.showModal(); } await refresh();
   };
   window.isUserDriveBusy = () => { if (busy) notice('文件正在处理，请等待完成后再切换账户。'); return busy; };
-  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); closePreview(); dialog.close(); files = []; checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; $('[data-files]').replaceChildren(); updateSelection(); } });
+  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); downloadAbort?.abort(); closeMenus(); closePreview(); dialog.close(); files = []; checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; $('[data-files]').replaceChildren(); updateSelection(); } });
   window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });
   document.querySelectorAll('[onclick="openUserDrive()"], [onclick="chooseDriveVideo()"]').forEach(button => { button.classList.add('ud-entry'); const label = button.textContent; button.innerHTML = `${icon('folder')}<span>${esc(label)}</span>`; button.setAttribute('aria-label', label === '网盘' ? '我的网盘' : label); });
 })();

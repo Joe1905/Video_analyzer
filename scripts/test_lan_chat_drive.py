@@ -7,6 +7,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from http import HTTPStatus
 from email.message import Message
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from lan_chat import DEFAULT_FEISHU_USER_ID, LanChatError, LanChatStore
+from drive_download import archive_chunks, archive_entries, archive_response
 
 
 class DriveTest(unittest.TestCase):
@@ -29,6 +31,48 @@ class DriveTest(unittest.TestCase):
 
     def upload(self):
         return self.store.drive_upload(self.a, "测试.mp4", io.BytesIO(b"test video"))
+
+    def test_batch_archive_names_contents_and_zip64(self):
+        names = ["测试.mp4", "测试.mp4", "测试 (2).mp4", "CON.txt", "a:b.txt"]
+        items = [self.store.drive_upload(self.a, name, io.BytesIO(f"file {index}".encode()))
+                 for index, name in enumerate(names)]
+        ids = [item["id"] for item in items]
+        entries = archive_entries(self.store, self.a, ids + ids[:1])
+        self.assertEqual([entry[1] for entry in entries],
+                         ["测试.mp4", "测试 (2).mp4", "测试 (2) (2).mp4", "_CON.txt", "a_b.txt"])
+        with patch("zipfile.ZIP64_LIMIT", 2):
+            chunks = list(archive_chunks(entries))
+        self.assertLessEqual(max(map(len, chunks)), 1024 * 1024)
+        with zipfile.ZipFile(io.BytesIO(b"".join(chunks))) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(len(archive.namelist()), len(items))
+            for index, name in enumerate(archive.namelist()):
+                self.assertEqual(archive.read(name), f"file {index}".encode())
+        self.assertEqual(len(self.store.drive_list(self.a)), len(items))
+
+    def test_batch_archive_auth_validates_entire_selection_before_headers(self):
+        item = self.upload()
+        other = self.store.drive_upload(self.b, "私有.mp4", io.BytesIO(b"private"))
+        handler = SimpleNamespace(send_response=lambda _: self.fail("Must not send headers"))
+        for token, ids, status in (("invalid", [item["id"]], 401),
+                                   (self.a, [item["id"], other["id"]], 404),
+                                   (self.a, [], 400), (self.a, [item["id"]] * 1001, 400),
+                                   (self.a, ["../secret"], 400)):
+            with self.subTest(status=status, count=len(ids)):
+                with self.assertRaises(LanChatError) as error:
+                    archive_response(handler, self.store, token, ids)
+                self.assertEqual(error.exception.status, status)
+        with patch("lan_chat.time.time", return_value=item["expires_at"]):
+            with self.assertRaises(LanChatError):
+                archive_entries(self.store, self.a, [item["id"]])
+
+    def test_batch_archive_streams_in_bounded_chunks(self):
+        content = b"x" * (2 * 1024 * 1024 + 7)
+        item = self.store.drive_upload(self.a, "large.mp4", io.BytesIO(content))
+        chunks = list(archive_chunks(archive_entries(self.store, self.a, [item["id"]])))
+        self.assertLessEqual(max(map(len, chunks)), 1024 * 1024)
+        with zipfile.ZipFile(io.BytesIO(b"".join(chunks))) as archive:
+            self.assertEqual(archive.read("large.mp4"), content)
 
     def test_preview_permissions_expiry_and_file_binding(self):
         item = self.upload()
@@ -136,6 +180,7 @@ class DriveTest(unittest.TestCase):
         namespace = {"cgi": cgi, "HTTPStatus": HTTPStatus, "LanChatError": LanChatError,
                      "BaseHTTPRequestHandler": object, "re": re, "parse_qs": parse_qs,
                      "FILE_TRANSFER_MAX_BYTES": 10 * 1024**3, "lan_chat_store": self.store,
+                     "drive_archive_response": archive_response,
                      "_lan_chat_token": lambda h: h.headers.get("X-Lan-Chat-Token", ""),
                      "_lan_chat_request_json": lambda h: json.loads(h.rfile.read()),
                      "json_response": lambda h, status, payload: setattr(h, "result", (status, payload)),
@@ -166,6 +211,29 @@ class DriveTest(unittest.TestCase):
         self.assertEqual(call("post", path + "/download", "", body, "application/x-www-form-urlencoded"),
                          (200, b"video bytes", "video/mp4", "video.mp4", 11))
         self.assertEqual(call("post", path + "/delete", self.b)[0], 404)
+        # Exercise the actual batch HTTP dispatch, form authentication and ZIP bytes.
+        def batch(token, ids, kind="application/x-www-form-urlencoded", raw=None):
+            body = urlencode({"token": token, "file_ids": ids}, doseq=True).encode() if raw is None else raw
+            headers = Message()
+            headers["Content-Length"] = str(len(body))
+            headers["Content-Type"] = kind
+            handler = SimpleNamespace(headers=headers, rfile=io.BytesIO(body), wfile=io.BytesIO(),
+                                      send_response=lambda status: setattr(handler, "status", status),
+                                      send_header=lambda key, value: handler.response_headers.update({key: value}),
+                                      end_headers=lambda: None, response_headers={})
+            namespace["handle_lan_chat_post"](handler, urlparse("/api/lan-chat/drive/download"))
+            return handler
+        response = batch(self.a, [file_id])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.response_headers["Content-Type"], "application/zip")
+        self.assertEqual(response.response_headers["Cache-Control"], "no-store")
+        with zipfile.ZipFile(io.BytesIO(response.wfile.getvalue())) as archive:
+            self.assertEqual(archive.read("video.mp4"), b"video bytes")
+        self.assertEqual(batch(self.b, [file_id]).result[0], 404)
+        self.assertEqual(batch("invalid", [file_id]).result[0], 401)
+        self.assertEqual(batch(self.a, []).result[0], 400)
+        self.assertEqual(batch(self.a, [file_id], "application/json").result[0], 400)
+        self.assertEqual(batch(self.a, [file_id], raw=b"\xff").result[0], 400)
         self.assertEqual(call("post", path + "/delete", self.a)[0], 200)
 
 
