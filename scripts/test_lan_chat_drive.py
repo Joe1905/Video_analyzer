@@ -6,14 +6,17 @@ import json
 import re
 import sqlite3
 import tempfile
+import threading
 import unittest
 import zipfile
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 from lan_chat import DEFAULT_FEISHU_USER_ID, LanChatError, LanChatStore
 from drive_download import archive_chunks, archive_entries, archive_response
@@ -73,6 +76,31 @@ class DriveTest(unittest.TestCase):
         self.assertLessEqual(max(map(len, chunks)), 1024 * 1024)
         with zipfile.ZipFile(io.BytesIO(b"".join(chunks))) as archive:
             self.assertEqual(archive.read("large.mp4"), content)
+
+    def test_batch_archive_http_response_is_complete(self):
+        item, store, token = self.upload(), self.store, self.a
+        class DownloadHandler(BaseHTTPRequestHandler):
+            def do_POST(handler):
+                archive_response(handler, store, token, [item["id"]])
+
+            def log_message(handler, *args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DownloadHandler)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+        thread.start()
+        try:
+            request = Request(f"http://127.0.0.1:{server.server_port}/download", data=b"test")
+            with urlopen(request, timeout=5) as response:
+                self.assertEqual(response.headers["Content-Type"], "application/zip")
+                self.assertEqual(response.headers["Connection"], "close")
+                self.assertIn("cloud-drive.zip", response.headers["Content-Disposition"])
+                with zipfile.ZipFile(io.BytesIO(response.read())) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(archive.read("测试.mp4"), b"test video")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_preview_permissions_expiry_and_file_binding(self):
         item = self.upload()
