@@ -14,7 +14,10 @@
     <div class="ud-drop" data-drop><span class="ud-drop-icon">${icon('upload')}</span><div class="ud-drop-copy"><strong>把文件拖到这里</strong><p>批量上传 · 单个最大 10 GB</p></div><button class="ud-btn ud-primary" data-upload>${icon('upload')}上传文件</button><input type="file" multiple hidden data-input aria-label="上传网盘文件"></div>
     <div class="ud-progress" data-progress hidden><div class="ud-progress-line"><span class="ud-progress-name" data-progress-name></span><span class="ud-percent" data-percent>0%</span><button class="ud-icon-btn" data-cancel-upload aria-label="取消上传">${icon('close')}</button></div><progress max="100" value="0" aria-label="文件上传进度"></progress><div class="ud-progress-note" data-progress-note></div></div>
     <div class="ud-tools"><div class="ud-tabs" aria-label="文件类型"><button class="ud-tab" data-filter="all" aria-pressed="true">全部文件</button><button class="ud-tab" data-filter="video" aria-pressed="false">视频</button><button class="ud-tab" data-filter="other" aria-pressed="false">其他</button></div><label class="ud-search">${icon('search')}<input type="search" placeholder="搜索文件名" aria-label="搜索网盘文件"></label><button class="ud-icon-btn" data-refresh aria-label="刷新文件列表">${icon('refresh')}</button></div>
-    <div class="ud-notice" data-notice role="status" hidden></div><p class="ud-count" data-count></p><div class="ud-table-head" aria-hidden="true"><span>文件名称</span><span>大小</span><span>剩余时间</span><span data-action-title>操作</span></div><div class="ud-files" data-files></div></div>
+    <div class="ud-notice" data-notice role="status" hidden></div><p class="ud-count" data-count></p>
+    <div class="ud-bulk" data-bulk hidden><label class="ud-check-all"><input type="checkbox" data-select-all>全选当前列表</label><span data-selection-count role="status">未选择文件</span><div class="ud-bulk-actions"><button class="ud-btn" data-clear-selection disabled>取消选择</button><button class="ud-btn ud-danger" data-delete-selection disabled>删除所选</button></div></div>
+    <div class="ud-confirm ud-bulk-confirm" data-bulk-confirm hidden><span data-bulk-confirm-note></span><button class="ud-btn" data-keep-selection>取消</button><button class="ud-btn ud-danger" data-confirm-selection>确认删除</button></div>
+    <div class="ud-table-head" aria-hidden="true"><span>文件名称</span><span>大小</span><span>剩余时间</span><span data-action-title>操作</span></div><div class="ud-files" data-files></div></div>
     <div class="ud-footer"><span class="ud-footer-note" data-footer-note>临时存放，轻装流转。重要文件请另行备份。</span><div class="ud-footer-actions"><button class="ud-btn" data-done>完成</button><button class="ud-btn ud-primary" data-use hidden disabled>使用此视频</button></div></div>`;
   document.body.append(dialog);
   const $ = selector => dialog.querySelector(selector);
@@ -34,6 +37,17 @@
   preview.querySelector('button').onclick = closePreview;
   preview.oncancel = event => { event.preventDefault(); closePreview(); };
   let selectVideo = null, ownerToken = '', files = [], filter = 'all', selected = '', pendingDelete = '', busy = false, xhr = null, cancelled = false, generation = 0, authenticated = false;
+  const checkedFiles = new Set();
+  function updateSelection() {
+    const inputs = [...dialog.querySelectorAll('[data-select-file]')];
+    inputs.forEach(input => { input.checked = checkedFiles.has(input.value); input.disabled = busy; input.closest('[data-id]').classList.toggle('ud-selected', input.checked); });
+    const all = $('[data-select-all]'), count = inputs.filter(input => input.checked).length;
+    all.checked = count > 0 && count === inputs.length; all.indeterminate = count > 0 && count < inputs.length; all.disabled = busy || !authenticated || !inputs.length;
+    const picked = files.filter(file => checkedFiles.has(file.id));
+    $('[data-selection-count]').textContent = picked.length ? `已选 ${picked.length} 个 · ${size(picked.reduce((sum, file) => sum + file.size, 0))}` : '未选择文件';
+    $('[data-clear-selection]').disabled = $('[data-delete-selection]').disabled = busy || !authenticated || !picked.length;
+    $('[data-bulk]').hidden = Boolean(selectVideo);
+  }
   function notice(message = '', error = false) { $('[data-notice]').hidden = !message; $('[data-notice]').textContent = message; $('[data-notice]').classList.toggle('ud-error', error); }
   function ensureOwner() { if (!ownerToken || ownerToken !== token()) throw new Error('请先在邻聊选择账户，或重新打开网盘。'); }
   async function request(path, options = {}) {
@@ -107,13 +121,16 @@
     const query = $('input[type=search]').value.trim().toLowerCase();
     const eligible = files.filter(f => !selectVideo || (video(f) && f.size <= 2 * 1024 ** 3));
     const visible = eligible.filter(f => (filter === 'all' || (filter === 'video' ? video(f) : !video(f))) && f.name.toLowerCase().includes(query));
+    const visibleIds = new Set(visible.map(file => file.id));
+    checkedFiles.forEach(id => { if (!visibleIds.has(id)) checkedFiles.delete(id); });
+    $('[data-bulk-confirm]').hidden = true;
     visible.sort((a, b) => sort.value === 'name' ? a.name.localeCompare(b.name, 'zh-CN', {numeric:true}) : sort.value === 'size' ? b.size - a.size : sort.value === 'expiry' ? a.expires_at - b.expires_at : b.created_at - a.created_at);
     $('[data-count]').textContent = `${visible.length} 个${selectVideo ? '可用视频' : '文件'} · ${size(visible.reduce((sum, f) => sum + f.size, 0))}`;
     $('[data-files]').innerHTML = visible.map(f => {
       const remaining = f.expires_at - Date.now() / 1000;
       const ttl = remaining <= 0 ? '已过期' : remaining < 86400 ? '不足 1 天' : `${Math.ceil(remaining / 86400)} 天`;
       const suffix = f.name.includes('.') ? f.name.split('.').pop().slice(0, 8) : 'FILE';
-      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : ''}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
+      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : `<label class="ud-check"><input type="checkbox" data-select-file value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}"></label>`}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
     }).join('') || empty(query ? '没有找到这个文件' : selectVideo ? '还没有可用的视频' : '这里是你的临时文件空间', query ? '换个关键词，或清空搜索试试。' : selectVideo ? '请先在邻聊网盘上传 MP4、MOV、M4V 或 WebM 视频，单个不超过 2 GB。' : '拖入视频或文件，之后可直接在 Proxy 发布任务中选用。');
     if (!selectVideo) dialog.querySelectorAll('[data-id]').forEach(row => {
       const file = files.find(f => f.id === row.dataset.id);
@@ -121,7 +138,7 @@
       const button = document.createElement('button'); button.className = 'ud-icon-btn'; button.dataset.preview = file.id; button.setAttribute('aria-label', `预览 ${file.name}`); button.title = '预览视频'; button.innerHTML = icon('video');
       row.querySelector('.ud-file-actions').prepend(button);
     });
-    loadThumbnails();
+    updateSelection(); loadThumbnails();
     $('[data-use]').disabled = !eligible.some(f => f.id === selected);
     if (selectVideo) $('[data-footer-note]').textContent = selected ? `已选：${files.find(f => f.id === selected)?.name || ''}` : '选中一个视频后，点击“使用此视频”。';
   }
@@ -145,9 +162,10 @@
       render();
     } catch (error) {
       if (run !== generation) return;
-      authenticated = false; files = []; selected = ''; $('[data-use]').disabled = true;
+      authenticated = false; files = []; selected = ''; checkedFiles.clear(); $('[data-use]').disabled = true;
       $('[data-owner]').textContent = '账户暂不可用'; $('[data-count]').textContent = '';
       $('[data-files]').innerHTML = empty('暂时无法读取网盘', '请检查登录状态或网络，然后点击刷新重试。'); notice(error.message, true);
+      $('[data-bulk-confirm]').hidden = true; updateSelection();
     } finally { if (run === generation) { $('[data-refresh]').disabled = false; $('[data-upload]').disabled = busy || !authenticated; } }
   }
   function upload(file) {
@@ -164,6 +182,7 @@
   async function uploadFiles(list) {
     if (busy || !authenticated || selectVideo || !list.length) return;
     busy = true; cancelled = false; $('[data-upload]').disabled = true; $('[data-input]').disabled = true; $('[data-progress]').hidden = false; notice();
+    $('[data-bulk-confirm]').hidden = true; updateSelection();
     let completed = 0, failed = 0;
     const errors = [];
     try {
@@ -189,8 +208,45 @@
   dialog.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => { filter = button.dataset.filter; dialog.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); render(); });
   $('input[type=search]').oninput = render;
   $('[data-refresh]').onclick = () => { notice(); refresh(); };
+  $('[data-select-all]').onchange = event => {
+    if (busy) return;
+    dialog.querySelectorAll('[data-select-file]').forEach(input => { if (event.target.checked) checkedFiles.add(input.value); else checkedFiles.delete(input.value); });
+    $('[data-bulk-confirm]').hidden = true; updateSelection();
+  };
+  $('[data-clear-selection]').onclick = () => { checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; updateSelection(); };
+  $('[data-delete-selection]').onclick = () => {
+    if (busy || !checkedFiles.size) return;
+    pendingDelete = ''; render();
+    $('[data-bulk-confirm-note]').textContent = `确认删除选中的 ${checkedFiles.size} 个文件？已创建的任务不受影响。`;
+    $('[data-bulk-confirm]').hidden = false;
+  };
+  $('[data-keep-selection]').onclick = () => { $('[data-bulk-confirm]').hidden = true; };
+  $('[data-confirm-selection]').onclick = async () => {
+    if (busy || !checkedFiles.size) return;
+    const ids = [...checkedFiles], session = ownerToken;
+    let completed = 0;
+    const errors = [];
+    busy = true; $('[data-bulk-confirm]').hidden = true; updateSelection();
+    $('[data-upload]').disabled = $('[data-input]').disabled = true;
+    try {
+      for (const id of ids) {
+        ensureOwner();
+        notice(`正在删除 ${completed + errors.length + 1} / ${ids.length} 个文件…`);
+        try { await request(`/api/lan-chat/drive/${id}/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); checkedFiles.delete(id); completed++; }
+        catch (error) { ensureOwner(); errors.push(`${files.find(file => file.id === id)?.name || id}：${error.message}`); }
+      }
+    } catch (error) { errors.push(error.message); }
+    finally {
+      busy = false; $('[data-input]').disabled = false;
+      if (session === ownerToken && session === token()) {
+        await refresh();
+        if (session === ownerToken && session === token()) notice(`已删除 ${completed} 个文件。${errors.join(' ')}`, errors.length > 0);
+      } else if (mount && token()) await window.openUserDrive();
+      else updateSelection();
+    }
+  };
   $('[data-files]').onclick = async event => {
-    const row = event.target.closest('[data-id]'); if (!row) return;
+    const row = event.target.closest('[data-id]'); if (!row || busy) return;
     try {
       ensureOwner();
       if (selectVideo) { selected = row.dataset.id; render(); $(`input[value="${selected}"]`)?.focus(); return; }
@@ -214,15 +270,22 @@
       }
     } catch (error) { notice(error.message, true); }
   };
-  $('[data-files]').onchange = event => { if (event.target.matches('input[type=radio]')) { selected = event.target.value; render(); $(`input[value="${selected}"]`)?.focus(); } };
+  $('[data-files]').onchange = event => {
+    if (event.target.matches('[data-select-file]')) {
+      if (busy) return;
+      if (event.target.checked) checkedFiles.add(event.target.value); else checkedFiles.delete(event.target.value);
+      $('[data-bulk-confirm]').hidden = true; updateSelection();
+    } else if (event.target.matches('input[type=radio]')) { selected = event.target.value; render(); $(`input[value="${selected}"]`)?.focus(); }
+  };
   $('[data-use]').onclick = () => { try { ensureOwner(); const file = files.find(f => f.id === selected); if (!file || file.expires_at <= Date.now() / 1000) throw new Error('视频已过期，请刷新后重新选择。'); selectVideo(file, ownerToken); dialog.close(); } catch (error) { notice(error.message, true); } };
-  function close() { if (mount) return; if (busy) { notice('文件正在上传，完成后可关闭；也可以点击进度条旁的取消按钮。'); return; } closePreview(); dialog.close(); generation++; }
+  function close() { if (mount) return; if (busy) { notice('文件正在处理，请等待完成后再关闭。'); return; } closePreview(); dialog.close(); generation++; }
   $('[data-close]').onclick = close; $('[data-done]').onclick = close;
   dialog.oncancel = event => { if (event.target !== dialog) return; event.preventDefault(); close(); };
   window.openUserDrive = async callback => {
     if (busy) return;
     stopThumbnails(); thumbnailCache.clear();
     selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
+    checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; updateSelection();
     dialog.classList.toggle('ud-picker', Boolean(selectVideo));
     $('[data-action-title]').textContent = selectVideo ? '选择' : '操作';
     $('#ud-title').textContent = selectVideo ? '选择云盘视频' : '我的云盘';
@@ -235,8 +298,8 @@
     $('[data-files]').innerHTML = empty('正在读取文件', '马上就好…');
     if (!dialog.open) { if (mount) dialog.setAttribute('open', ''); else dialog.showModal(); } await refresh();
   };
-  window.isUserDriveBusy = () => { if (busy) notice('请先完成或取消上传，再切换账户。'); return busy; };
-  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); closePreview(); dialog.close(); files = []; $('[data-files]').replaceChildren(); } });
+  window.isUserDriveBusy = () => { if (busy) notice('文件正在处理，请等待完成后再切换账户。'); return busy; };
+  window.addEventListener('storage', event => { if (event.key === key) { generation++; cancelled = true; xhr?.abort(); closePreview(); dialog.close(); files = []; checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; $('[data-files]').replaceChildren(); updateSelection(); } });
   window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });
   document.querySelectorAll('[onclick="openUserDrive()"], [onclick="chooseDriveVideo()"]').forEach(button => { button.classList.add('ud-entry'); const label = button.textContent; button.innerHTML = `${icon('folder')}<span>${esc(label)}</span>`; button.setAttribute('aria-label', label === '网盘' ? '我的网盘' : label); });
 })();
