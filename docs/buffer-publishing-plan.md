@@ -52,7 +52,11 @@ Windows developer → GitHub → 4003 /home/openclaw/Video_analyzer-dev；远程
 
 ### 2026-10-21 实际改期校验修正
 
-用户实际改为洛杉矶2026-10-21 08:15时报 `Invalid post: Post must have either text or media., TikTok posts require at least one image or video.`。只读核对确认原Post仍有一个video/mp4，source与原Ubuntu地址一致，AI声明为true。改为每次从Buffer读取原帖视频、封面帧/标题、AI声明，和完整文案一起提交editPost；只改期也携带原文案/媒体。视频缺失时停止修改，回执或待确认重读必须同时匹配视频和AI声明。新增模拟实际接口“先校验再合并”行为的回归用例。真实改期与重读验证待执行。
+用户实际改为洛杉矶2026-10-21 08:15时报 `Invalid post: Post must have either text or media., TikTok posts require at least one image or video.`。只读核对确认原Post仍有一个video/mp4，source与原Ubuntu地址一致，AI声明为true。改为每次从Buffer读取原帖视频、封面帧/标题、AI声明，和完整文案一起提交editPost；只改期也携带原文案/媒体。视频缺失时停止修改，回执或待确认重读必须同时匹配视频和AI声明。新增模拟实际接口“先校验再合并”行为的回归用例，Docker共33项通过。
+
+用户确认最终按输入值洛杉矶2026-10-21 08:15／北京2026-10-21 23:15执行。浏览器实际保存成功，独立读取Buffer确认dueAt为2026-10-21T15:15:00.000Z、status=scheduled、原Post ID不变、原视频source不变、文案和AI声明保留，总任务数仍为1。没有取消重建，也未立即发布。
+
+另修正编辑时间换算残留：输入变化时立即清除旧对照，显示“换算中”，当前换算成功前禁止保存，避免输入08:15但仍显示上一时间的北京21:15。新建发布的输入也立即清除旧对照。
 
 Buffer 的价值是现成账号接入和多平台排期；仅TikTok且有可用的官方权限时，可以直接替代Buffer。TikTok普通Content Posting API的公开发布审核要求，不能直接套用为私人内部发布工具已获准。
 

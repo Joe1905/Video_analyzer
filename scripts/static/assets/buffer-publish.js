@@ -93,7 +93,7 @@
     if($('report').open && $('report').dataset.jobId) showReport($('report').dataset.jobId, false);
   }
   async function loadJobs() {state.jobs=(await api('jobs')).jobs;$('listError').textContent='';renderJobs();}
-  let editing=null, editBusy=false, editPreviewSequence=0, editPreviewTimer;
+  let editing=null, editBusy=false, editPreviewPending=false, editPreviewSequence=0, editPreviewTimer;
   function localInput(value,zone) {
     const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).map(p=>[p.type,p.value]));
     return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
@@ -101,19 +101,22 @@
   async function previewEditTime() {
     const sequence=++editPreviewSequence;
     if(!editing||!editing.can_edit_time)return;
+    editPreviewPending=true;$('saveEdit').disabled=true;$('editOffset').textContent='';
     $('editBeijing').classList.remove('error');
     if(!$('editTime').value){$('editBeijing').textContent='请选择发布时间';return;}
+    $('editBeijing').textContent='北京时间：换算中…';
     try{
       const result=await api('time-preview?local_time='+encodeURIComponent($('editTime').value)+'&timezone='+encodeURIComponent(editing.job.timezone));
       if(sequence!==editPreviewSequence)return;
       $('editOffset').textContent=offset(result.utc,result.timezone);
       $('editBeijing').textContent=`北京时间：${format(result.utc,'Asia/Shanghai',false)}（UTC+8）`;
+      editPreviewPending=false;$('saveEdit').disabled=editBusy;
     }catch(err){if(sequence===editPreviewSequence){$('editBeijing').textContent=err.message;$('editBeijing').classList.add('error');}}
   }
   async function openEdit(id) {
     editing=await api('edit?id='+encodeURIComponent(id));
     const j=editing.job;
-    $('editError').textContent='';$('saveEdit').disabled=false;
+    editPreviewPending=false;$('editError').textContent='';$('saveEdit').disabled=false;
     $('editChannel').textContent=j.channel_name+' · '+(names[j.state]||j.state);
     $('editCaption').value=j.text;$('editCaption').disabled=!editing.can_edit_text;
     $('editSchedule').hidden=!editing.can_edit_time;$('editTime').required=editing.can_edit_time;
@@ -122,18 +125,18 @@
     $('editTime').value=editing.originalTime;$('editOffset').textContent='';
     $('editDialog').showModal();await previewEditTime();
   }
-  $('editTime').oninput=()=>{editPreviewSequence++;clearTimeout(editPreviewTimer);editPreviewTimer=setTimeout(previewEditTime,200);};
+  $('editTime').oninput=()=>{editPreviewSequence++;editPreviewPending=true;$('saveEdit').disabled=true;$('editOffset').textContent='';$('editBeijing').classList.remove('error');$('editBeijing').textContent='北京时间：换算中…';clearTimeout(editPreviewTimer);editPreviewTimer=setTimeout(previewEditTime,200);};
   $('editTime').onchange=()=>{clearTimeout(editPreviewTimer);previewEditTime();};
   $('closeEdit').onclick=()=>{if(!editBusy)$('editDialog').close();};
   $('editDialog').addEventListener('cancel',event=>{if(editBusy)event.preventDefault();});
   $('editForm').onsubmit=async event=>{
-    event.preventDefault();if(editBusy||!editing)return;
+    event.preventDefault();if(editBusy||!editing||editPreviewPending)return;
     editBusy=true;$('saveEdit').disabled=true;$('closeEdit').disabled=true;$('editError').textContent='';
     try{
       const result=await api('edit',{id:editing.job.id,version:editing.version,text:$('editCaption').value,local_time:editing.can_edit_time&&$('editTime').value!==editing.originalTime?$('editTime').value:null});
       state.jobs=state.jobs.map(j=>j.id===result.id?result:j);renderJobs();$('editDialog').close();await loadJobs();
     }catch(err){$('editError').textContent=err.message;}
-    finally{editBusy=false;$('saveEdit').disabled=false;$('closeEdit').disabled=false;}
+    finally{editBusy=false;$('saveEdit').disabled=editPreviewPending;$('closeEdit').disabled=false;}
   };
   function showReport(id, open=true) {
     const j=state.jobs.find(item=>item.id===id);if(!j)return;
@@ -163,7 +166,7 @@
   };
   $('caption').oninput=()=>{$('count').textContent=$('caption').value.length+' / 2200';state.requestId=null;};
   $('channel').onchange=()=>{state.requestId=null;ready();};
-  $('publishTime').oninput=()=>{state.requestId=null;previewSequence++;clearTimeout(previewTimer);previewTimer=setTimeout(previewTime,200);};
+  $('publishTime').oninput=()=>{state.requestId=null;previewSequence++;$('timezone').textContent='';$('beijingTime').textContent='北京时间：换算中…';clearTimeout(previewTimer);previewTimer=setTimeout(previewTime,200);};
   $('publishTime').onchange=()=>{state.requestId=null;clearTimeout(previewTimer);previewTime();};
   $('aiGenerated').onchange=() => state.requestId=null;
   document.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
