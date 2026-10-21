@@ -48,6 +48,8 @@ Windows developer → GitHub → 4003 /home/openclaw/Video_analyzer-dev；远程
 
 参考：https://developers.buffer.com/types/EditPostInput.html
 
+验证：4003 Docker 30项测试通过，包含本地编辑、文案/时间最小更新、版本冲突、已发布/无权限拦截、失败保留原排期、超时读取匹配、无改动不调用mutation。真实API确认现有任务具备文案和改期权限；浏览器验证编辑弹窗、时间对照、无改动保存通过，控制台无error/warn。复核原Post ID、文案、排期一致，未对用户任务触发真实editPost；实际有变化的远程编辑通过模拟接口测试覆盖，待用户保存修改后验证。
+
 Buffer 的价值是现成账号接入和多平台排期；仅TikTok且有可用的官方权限时，可以直接替代Buffer。TikTok普通Content Posting API的公开发布审核要求，不能直接套用为私人内部发布工具已获准。
 
 TikTok Shop美国站官方说明支持给近30天已发布视频通过Creator Center补挂商品；该说明属于界面功能，未验证补挂对应的开放API。因此没有实现“Buffer发布后自动补挂商品”。
