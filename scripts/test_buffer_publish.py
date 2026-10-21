@@ -121,6 +121,84 @@ class PublishingTests(unittest.TestCase):
             self.assertEqual(api.call_count, 1)
             self.assertEqual(publish.get_job(job["id"])["state"], "sent")
 
+    def scheduled(self):
+        job = self.create()
+        post = {"id": "post-test", "text": job["text"], "status": "scheduled", "dueAt": "2027-12-01T18:00:00Z", "updatedAt": "version-1", "allowedActions": ["updatePost", "updatePostSchedule"]}
+        publish.apply_post(job, post)
+        return job, post
+
+    def test_edit_queued_stays_local(self):
+        job = self.create()
+        with patch.object(publish, "graphql") as api:
+            result = publish.edit_job({"id": job["id"], "version": job["updated"], "text": "new text"})
+            self.assertEqual(result["text"], "new text")
+            self.assertEqual(result["state"], "queued")
+            api.assert_not_called()
+
+    def test_edit_text_keeps_media_and_schedule(self):
+        job, post = self.scheduled()
+        receipt = {**post, "text": "new text", "updatedAt": "version-2"}
+        with patch.object(publish, "graphql", side_effect=[{"post": post}, {"editPost": {"post": receipt}}]) as api:
+            result = publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+            self.assertEqual(result["post_id"], "post-test")
+            self.assertEqual(result["text"], "new text")
+            self.assertEqual(api.call_args.args[1]["input"], {"id": "post-test", "text": "new text"})
+            self.assertIn("editPost", api.call_args.args[0])
+            self.assertNotIn("createPost", api.call_args.args[0])
+
+    def test_edit_schedule_preserves_text_and_uses_la_time(self):
+        job, post = self.scheduled()
+        receipt = {**post, "dueAt": "2027-12-02T18:30:00Z", "updatedAt": "version-2"}
+        with patch.object(publish, "graphql", side_effect=[{"post": post}, {"editPost": {"post": receipt}}]) as api:
+            result = publish.edit_job({"id": job["id"], "version": "version-1", "text": job["text"], "local_time": "2027-12-02T10:30"})
+            self.assertEqual(result["due_at"], receipt["dueAt"])
+            self.assertEqual(api.call_args.args[1]["input"], {"id": "post-test", "mode": "customScheduled", "dueAt": receipt["dueAt"]})
+
+    def test_edit_stale_version_does_not_mutate(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", return_value={"post": post}) as api:
+            with self.assertRaises(publish.PublishError):
+                publish.edit_job({"id": job["id"], "version": "old-version", "text": "new text"})
+            self.assertEqual(api.call_count, 1)
+
+    def test_edit_published_and_missing_permission_rejected(self):
+        for overrides in ({"status": "sent"}, {"allowedActions": []}):
+            job, post = self.scheduled()
+            with patch.object(publish, "graphql", return_value={"post": {**post, **overrides}}) as api:
+                with self.assertRaises(publish.PublishError):
+                    publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+                self.assertEqual(api.call_count, 1)
+
+    def test_edit_rejection_keeps_original_pending_task(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", side_effect=[{"post": post}, {"editPost": {"message": "Cannot edit"}}]):
+            with self.assertRaises(publish.PublishError):
+                publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+        stored = publish.get_job(job["id"])
+        self.assertEqual(stored["state"], "scheduled")
+        self.assertEqual(stored["text"], "test")
+
+    def test_edit_timeout_needs_matching_readback(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", side_effect=[{"post": post}, publish.Uncertain("timeout")]):
+            with self.assertRaises(publish.Uncertain):
+                publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+        stored = publish.get_job(job["id"])
+        self.assertEqual(stored["state"], "uncertain")
+        with patch.object(publish, "graphql", return_value={"post": post}):
+            with self.assertRaises(publish.Uncertain):
+                publish.reconcile(stored)
+        with patch.object(publish, "graphql", return_value={"post": {**post, "text": "new text", "updatedAt": "version-2"}}):
+            publish.reconcile(stored)
+        self.assertEqual(publish.get_job(job["id"])["state"], "scheduled")
+        self.assertNotIn("pending_edit", publish.get_job(job["id"]))
+
+    def test_unchanged_edit_performs_no_mutation(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", return_value={"post": post}) as api:
+            publish.edit_job({"id": job["id"], "version": "version-1", "text": post["text"]})
+            self.assertEqual(api.call_count, 1)
+
     def test_restart_does_not_replay_ambiguous_submission(self):
         job = self.create()
         publish.save(job, "submitting")

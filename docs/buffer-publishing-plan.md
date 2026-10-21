@@ -42,6 +42,12 @@ Windows developer → GitHub → 4003 /home/openclaw/Video_analyzer-dev；远程
 
 发布输入明确标注“发布时间（洛杉矶时间）”，所选日期旁显示当日 UTC 偏移，下面实时换算北京时间。任务列表、日志使用中文时区及当时的UTC偏移；当前服务器时间持续更新，页面重新可见时重新同步。预览复用后端的时区转换，保持夏令时无效时间和重复时间的校验；发布本身仍要求未来至少两分钟。
 
+### 2026-10-21 待发布任务编辑
+
+官方 `editPost(input: EditPostInput!)` 支持原任务修改文案和定时时间；省略assets/metadata保留视频及声明。4003增加编辑弹窗，修改时间时显示洛杉矶/北京时间对照。保存前查询真实状态与allowedActions，以updatedAt检测其他修改；sending/sent不允许编辑。本地未提交任务直接修改持久化记录；远程任务只调用editPost，不取消重建。提交中断/超时不自动重试，保留待确认修改，查询回执匹配后再恢复状态。此次不改动用户既有任务的实际文案或排期。
+
+参考：https://developers.buffer.com/types/EditPostInput.html
+
 Buffer 的价值是现成账号接入和多平台排期；仅TikTok且有可用的官方权限时，可以直接替代Buffer。TikTok普通Content Posting API的公开发布审核要求，不能直接套用为私人内部发布工具已获准。
 
 TikTok Shop美国站官方说明支持给近30天已发布视频通过Creator Center补挂商品；该说明属于界面功能，未验证补挂对应的开放API。因此没有实现“Buffer发布后自动补挂商品”。

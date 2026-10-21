@@ -22,9 +22,10 @@ DATA = ROOT / "data" / "buffer_publish"
 VIDEOS = ROOT / "videos" / "buffer_publish"
 MAX_BYTES = 1024 ** 3
 MEDIA_URL = "https://ruitech.hk/buffer-media"
-ACTIVE = {"queued", "uploading", "submitting", "scheduled", "sending", "cancelling"}
-POST_FIELDS = "id status dueAt sentAt externalLink error { message } allowedActions"
+ACTIVE = {"queued", "uploading", "submitting", "scheduled", "sending", "cancelling", "editing"}
+POST_FIELDS = "id text updatedAt status dueAt sentAt externalLink error { message } allowedActions"
 CREATE = "mutation Publish($input: CreatePostInput!) { createPost(input: $input) { ... on PostActionSuccess { post { " + POST_FIELDS + " } } ... on MutationError { message } } }"
+EDIT = "mutation Edit($input: EditPostInput!) { editPost(input: $input) { ... on PostActionSuccess { post { " + POST_FIELDS + " } } ... on MutationError { message } } }"
 _started = False
 _lock = threading.RLock()
 
@@ -293,6 +294,10 @@ def apply_post(job, post):
     state = {"sent": "sent", "error": "failed", "scheduled": "scheduled", "sending": "sending", "draft": "draft", "needs_approval": "needs_approval"}.get(status, "uncertain")
     previous = job.get("buffer_status")
     job.update(post_id=post["id"], buffer_status=status, external_link=post.get("externalLink"), sent_at=post.get("sentAt"))
+    if isinstance(post.get("text"), str):
+        job["text"] = post["text"]
+    if post.get("updatedAt"):
+        job["buffer_updated_at"] = post["updatedAt"]
     if post.get("dueAt"):
         job["due_at"] = post["dueAt"]
     if post.get("error"):
@@ -305,6 +310,13 @@ def reconcile(job):
     post = graphql("query Status($id: PostId!) { post(input: {id: $id}) { " + POST_FIELDS + " } }", {"id": job["post_id"]})["post"]
     if post is None:
         raise Uncertain("Buffer 中找不到该任务，请核对是否已在外部删除")
+    if job.get("pending_edit"):
+        if not edit_matches(job["pending_edit"], post):
+            save(job, "uncertain", "当前状态尚未匹配待确认的修改，请到 Buffer 核对")
+            raise Uncertain("当前状态尚未匹配待确认的修改，请到 Buffer 核对")
+        job.pop("pending_edit")
+        apply_post(job, post)
+        return save(job, message="已确认 Buffer 修改结果")
     return apply_post(job, post)
 
 
@@ -354,6 +366,109 @@ def cancel(job_id):
             raise
 
 
+def editable_job(job_id):
+    job = get_job(job_id)
+    if job["state"] not in {"queued", "scheduled", "draft"}:
+        raise PublishError("任务已开始处理或当前状态不能编辑，请刷新状态")
+    if not job.get("post_id"):
+        return job, None
+    post = graphql("query EditStatus($id: PostId!) { post(input: {id: $id}) { " + POST_FIELDS + " } }", {"id": job["post_id"]})["post"]
+    if not post:
+        raise PublishError("Buffer 中找不到该任务，请核对")
+    apply_post(job, post)
+    if post["status"] not in {"scheduled", "draft"}:
+        raise PublishError("任务已开始发布或已发布，不能编辑")
+    if not {"updatePost", "updatePostSchedule"}.intersection(post.get("allowedActions", [])):
+        raise PublishError("当前账号没有编辑此任务的权限")
+    return job, post
+
+
+def edit_details(job_id):
+    with _lock:
+        job, post = editable_job(job_id)
+        return {"job": job, "version": post["updatedAt"] if post else job["updated"],
+                "can_edit_text": not post or "updatePost" in post["allowedActions"],
+                "can_edit_time": (post["status"] == "scheduled" and "updatePostSchedule" in post["allowedActions"])
+                                 if post else job["mode"] == "schedule"}
+
+
+def edit_matches(changes, post):
+    if "text" in changes and changes["text"] != post.get("text"):
+        return False
+    if "due_at" in changes:
+        try:
+            if datetime.fromisoformat(changes["due_at"].replace("Z", "+00:00")) != datetime.fromisoformat(post["dueAt"].replace("Z", "+00:00")):
+                return False
+        except (KeyError, ValueError, AttributeError):
+            return False
+    return True
+
+
+def edit_job(payload):
+    text = payload.get("text")
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2200:
+        raise PublishError("文案需为 1 至 2200 个字符")
+    text = text.strip()
+    with _lock:
+        job, post = editable_job(payload.get("id"))
+        version = post["updatedAt"] if post else job["updated"]
+        if payload.get("version") != version:
+            raise PublishError("任务已发生变化，请关闭编辑框后重新打开")
+        changes = {}
+        if text != job["text"]:
+            if post and "updatePost" not in post["allowedActions"]:
+                raise PublishError("当前账号没有修改文案的权限")
+            changes["text"] = text
+        is_scheduled = post["status"] == "scheduled" if post else job["mode"] == "schedule"
+        if is_scheduled:
+            local_time = payload.get("local_time")
+            if local_time:
+                value = due_at(local_time, job["timezone"])
+                old = datetime.fromisoformat(job["due_at"].replace("Z", "+00:00"))
+                new = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if old != new:
+                    if post and "updatePostSchedule" not in post["allowedActions"]:
+                        raise PublishError("当前账号没有修改发布时间的权限")
+                    changes["due_at"] = value
+        if not changes:
+            return job
+        message = "已修改" + "、".join("文案" if key == "text" else "发布时间" for key in changes)
+        if "due_at" in changes:
+            local = datetime.fromisoformat(changes["due_at"].replace("Z", "+00:00")).astimezone(ZoneInfo(job["timezone"]))
+            message += "：" + local.isoformat() + "（" + job["timezone"] + "）"
+        if not post:
+            job.update(changes)
+            return save(job, message=message)
+        value = {"id": post["id"]}
+        if "text" in changes:
+            value["text"] = changes["text"]
+        if "due_at" in changes:
+            value.update(mode="customScheduled", dueAt=changes["due_at"])
+        prior_state = job["state"]
+        job["pending_edit"] = changes
+        save(job, "editing", "正在修改 Buffer 原任务")
+        try:
+            result = graphql(EDIT, {"input": value}, mutation=True)["editPost"]
+            if result.get("message"):
+                raise PublishError(result["message"])
+            receipt = result.get("post")
+            if not receipt or receipt.get("id") != post["id"] or not edit_matches(changes, receipt):
+                raise Uncertain("编辑结果缺少有效回执，请查询状态")
+            job.pop("pending_edit", None)
+            apply_post(job, receipt)
+            return save(job, message=message)
+        except Uncertain as exc:
+            save(job, "uncertain", "编辑结果待确认，未自动重试：" + str(exc))
+            raise
+        except PublishError as exc:
+            job.pop("pending_edit", None)
+            save(job, prior_state, "编辑未成功，保留原任务：" + str(exc))
+            raise
+        except Exception as exc:
+            save(job, "uncertain", "无法确认编辑结果，请查询状态")
+            raise Uncertain("无法确认编辑结果，请查询状态") from exc
+
+
 def worker_tick():
     # One worker owns submissions. API cancellation and worker claims share the lock.
     for item in jobs({"queued", "scheduled", "sending"}):
@@ -386,8 +501,8 @@ def start_worker():
     if _started:
         return
     _started = True
-    for item in jobs({"submitting", "cancelling", "uploading"}):
-        if item["state"] in {"submitting", "cancelling"}:
+    for item in jobs({"submitting", "cancelling", "uploading", "editing"}):
+        if item["state"] in {"submitting", "cancelling", "editing"}:
             save(item, "uncertain", "服务重启时请求结果未知，未自动重发，请到 Buffer 核对")
         elif item["state"] == "uploading":
             save(item, "queued", "恢复未提交的上传任务")
@@ -438,9 +553,12 @@ def handle(handler, parsed):
             elif parsed.path == "/api/publish/jobs":
                 reply(200, {"jobs": jobs()})
             elif parsed.path == "/api/publish/time-preview":
-                zone = clock()["timezone"]
-                local_time = parse_qs(parsed.query).get("local_time", [""])[0]
+                query = parse_qs(parsed.query)
+                zone = query.get("timezone", [clock()["timezone"]])[0]
+                local_time = query.get("local_time", [""])[0]
                 reply(200, {"utc": due_at(local_time, zone, require_future=False), "timezone": zone})
+            elif parsed.path == "/api/publish/edit":
+                reply(200, edit_details(parse_qs(parsed.query).get("id", [""])[0]))
             else:
                 reply(404, {"error": "接口不存在"})
             return True
@@ -491,10 +609,12 @@ def handle(handler, parsed):
             reply(202, create_job(payload))
         elif parsed.path == "/api/publish/cancel":
             reply(200, cancel(payload.get("id")))
+        elif parsed.path == "/api/publish/edit":
+            reply(200, edit_job(payload))
         elif parsed.path == "/api/publish/refresh":
             with _lock:
                 item = get_job(payload.get("id"))
-                if not item.get("post_id") or item["state"] in {"submitting", "cancelling", "cancelled"}:
+                if not item.get("post_id") or item["state"] in {"submitting", "cancelling", "cancelled", "editing"}:
                     raise PublishError("暂无可查询的 Buffer 任务，请在 Buffer 核对")
                 reply(200, reconcile(item))
         else:

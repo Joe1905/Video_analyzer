@@ -3,8 +3,8 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const state = {mode:'schedule', filter:'all', jobs:[], asset:null, status:null, channels:[], requestId:null, busy:false};
-  const names = {queued:'等待处理',uploading:'上传中',submitting:'提交中',scheduled:'已定时',sending:'发布中',sent:'已发布',failed:'失败',uncertain:'结果待确认',draft:'Buffer 草稿',needs_approval:'待审批',cancelled:'已取消',cancelling:'取消中'};
-  const active = ['queued','uploading','submitting','scheduled','sending','cancelling'];
+  const names = {queued:'等待处理',uploading:'上传中',submitting:'提交中',scheduled:'已定时',sending:'发布中',sent:'已发布',failed:'失败',uncertain:'结果待确认',draft:'Buffer 草稿',needs_approval:'待审批',cancelled:'已取消',cancelling:'取消中',editing:'修改中'};
+  const active = ['queued','uploading','submitting','scheduled','sending','cancelling','editing'];
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const requestId = () => {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -89,10 +89,52 @@
   function renderJobs() {
     const filtered=state.jobs.filter(j=>state.filter==='all'||(state.filter==='active'?active.includes(j.state):state.filter==='failed'?['failed','uncertain','needs_approval'].includes(j.state):j.state===state.filter));
     $('jobCount').textContent=state.jobs.length;
-    $('jobs').innerHTML=filtered.length ? filtered.map(j=>`<article class="job"><div class="job-top"><strong>${esc(j.channel_name)}</strong><span class="badge ${esc(j.state)}">${esc(names[j.state]||j.state)}</span></div><p>${esc(j.text.length>150?j.text.slice(0,150)+'…':j.text)}</p><div class="job-foot"><span>${j.due_at?'计划 '+format(j.due_at):j.mode==='draft'?'存入草稿 · '+format(j.created):'立即发布 · '+format(j.created)}</span><div class="job-actions"><button data-action="report" data-id="${j.id}">查看日志</button>${j.post_id&&!['cancelled','cancelling','submitting'].includes(j.state)?`<button data-action="refresh" data-id="${j.id}">查状态</button>`:''}${['queued','draft','scheduled','needs_approval'].includes(j.state)?`<button data-action="cancel" data-id="${j.id}">取消</button>`:''}</div></div></article>`).join('') : '<div class="empty"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5M8 16h3"/></svg><strong>暂无发布记录</strong><span>创建任务后，在这里查看进度和日志</span></div>';
+    $('jobs').innerHTML=filtered.length ? filtered.map(j=>`<article class="job"><div class="job-top"><strong>${esc(j.channel_name)}</strong><span class="badge ${esc(j.state)}">${esc(names[j.state]||j.state)}</span></div><p>${esc(j.text.length>150?j.text.slice(0,150)+'…':j.text)}</p><div class="job-foot"><span>${j.due_at?'计划 '+format(j.due_at,j.timezone):j.mode==='draft'?'存入草稿 · '+format(j.created,j.timezone):'立即发布 · '+format(j.created,j.timezone)}</span><div class="job-actions">${['queued','draft','scheduled'].includes(j.state)?`<button data-action="edit" data-id="${j.id}">编辑</button>`:''}<button data-action="report" data-id="${j.id}">查看日志</button>${j.post_id&&!['cancelled','cancelling','submitting','editing'].includes(j.state)?`<button data-action="refresh" data-id="${j.id}">查状态</button>`:''}${['queued','draft','scheduled','needs_approval'].includes(j.state)?`<button data-action="cancel" data-id="${j.id}">取消</button>`:''}</div></div></article>`).join('') : '<div class="empty"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5M8 16h3"/></svg><strong>暂无发布记录</strong><span>创建任务后，在这里查看进度和日志</span></div>';
     if($('report').open && $('report').dataset.jobId) showReport($('report').dataset.jobId, false);
   }
   async function loadJobs() {state.jobs=(await api('jobs')).jobs;$('listError').textContent='';renderJobs();}
+  let editing=null, editBusy=false, editPreviewSequence=0, editPreviewTimer;
+  function localInput(value,zone) {
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).map(p=>[p.type,p.value]));
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+  }
+  async function previewEditTime() {
+    const sequence=++editPreviewSequence;
+    if(!editing||!editing.can_edit_time)return;
+    $('editBeijing').classList.remove('error');
+    if(!$('editTime').value){$('editBeijing').textContent='请选择发布时间';return;}
+    try{
+      const result=await api('time-preview?local_time='+encodeURIComponent($('editTime').value)+'&timezone='+encodeURIComponent(editing.job.timezone));
+      if(sequence!==editPreviewSequence)return;
+      $('editOffset').textContent=offset(result.utc,result.timezone);
+      $('editBeijing').textContent=`北京时间：${format(result.utc,'Asia/Shanghai',false)}（UTC+8）`;
+    }catch(err){if(sequence===editPreviewSequence){$('editBeijing').textContent=err.message;$('editBeijing').classList.add('error');}}
+  }
+  async function openEdit(id) {
+    editing=await api('edit?id='+encodeURIComponent(id));
+    const j=editing.job;
+    $('editError').textContent='';$('saveEdit').disabled=false;
+    $('editChannel').textContent=j.channel_name+' · '+(names[j.state]||j.state);
+    $('editCaption').value=j.text;$('editCaption').disabled=!editing.can_edit_text;
+    $('editSchedule').hidden=!editing.can_edit_time;$('editTime').required=editing.can_edit_time;
+    $('editTimeLabel').textContent=`发布时间（${zoneName(j.timezone)}）`;
+    editing.originalTime=editing.can_edit_time&&j.due_at?localInput(j.due_at,j.timezone):'';
+    $('editTime').value=editing.originalTime;$('editOffset').textContent='';
+    $('editDialog').showModal();await previewEditTime();
+  }
+  $('editTime').oninput=()=>{editPreviewSequence++;clearTimeout(editPreviewTimer);editPreviewTimer=setTimeout(previewEditTime,200);};
+  $('editTime').onchange=()=>{clearTimeout(editPreviewTimer);previewEditTime();};
+  $('closeEdit').onclick=()=>{if(!editBusy)$('editDialog').close();};
+  $('editDialog').addEventListener('cancel',event=>{if(editBusy)event.preventDefault();});
+  $('editForm').onsubmit=async event=>{
+    event.preventDefault();if(editBusy||!editing)return;
+    editBusy=true;$('saveEdit').disabled=true;$('closeEdit').disabled=true;$('editError').textContent='';
+    try{
+      const result=await api('edit',{id:editing.job.id,version:editing.version,text:$('editCaption').value,local_time:editing.can_edit_time&&$('editTime').value!==editing.originalTime?$('editTime').value:null});
+      state.jobs=state.jobs.map(j=>j.id===result.id?result:j);renderJobs();$('editDialog').close();await loadJobs();
+    }catch(err){$('editError').textContent=err.message;}
+    finally{editBusy=false;$('saveEdit').disabled=false;$('closeEdit').disabled=false;}
+  };
   function showReport(id, open=true) {
     const j=state.jobs.find(item=>item.id===id);if(!j)return;
     $('report').dataset.jobId=id;
@@ -143,7 +185,7 @@
     const b=e.target.closest('[data-action]');if(!b)return;
     if(b.dataset.action==='report')return showReport(b.dataset.id);
     b.disabled=true;$('listError').textContent='';
-    try{await api(b.dataset.action,{id:b.dataset.id});await loadJobs();}catch(err){$('listError').textContent=err.message;b.disabled=false;}
+    try{if(b.dataset.action==='edit'){await openEdit(b.dataset.id);b.disabled=false;}else{await api(b.dataset.action,{id:b.dataset.id});await loadJobs();}}catch(err){$('listError').textContent=err.message;b.disabled=false;}
   };
   $('connect').onclick=()=>{$('bufferKey').value='';$('settings').showModal();};$('closeSettings').onclick=()=>$('settings').close();$('closeReport').onclick=()=>$('report').close();
   $('settingsForm').onsubmit=async e=>{e.preventDefault();$('saveKey').disabled=true;$('settingsError').textContent='';try{await api('config',{buffer_key:$('bufferKey').value});$('bufferKey').value='';await loadStatus();await loadChannels();$('settings').close();}catch(err){$('settingsError').textContent=err.message;}finally{$('saveKey').disabled=false;}};
