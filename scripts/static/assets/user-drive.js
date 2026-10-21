@@ -3,19 +3,19 @@
   const token = () => localStorage.getItem(key) || '';
   const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const paths = {folder:'<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M3 9h18"/>',upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',lock:'<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',search:'<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>',video:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m10 8 6 4-6 4V8Z"/>',file:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z"/><path d="M14 3v6h6M8 14h8M8 17h5"/>',download:'<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>',trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',refresh:'<path d="M20 4v6h-6M4 20v-6h6M5.5 8a7 7 0 0 1 11.6-3L20 10M4 14l2.9 5A7 7 0 0 0 18.5 16"/>'};
+  Object.assign(paths, {list:'<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',compact:'<path d="M4 5h16M4 10h16M4 15h16M4 20h16"/>'});
   const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
   const size = bytes => !bytes ? '0 KB' : bytes < 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : bytes < 1024 ** 3 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   const video = f => /\.(mp4|mov|m4v|webm)$/i.test(f.name);
   const date = value => new Date(value * 1000).toLocaleDateString('zh-CN', {month:'2-digit',day:'2-digit'});
   const dialog = document.createElement('dialog');
   dialog.className = 'ud-dialog'; dialog.setAttribute('aria-labelledby', 'ud-title');
-  dialog.innerHTML = `<div class="ud-head"><div class="ud-mark">${icon('folder')}</div><div class="ud-title"><h2 id="ud-title">我的网盘</h2><p data-subtitle>让视频随手可用，也让文件井井有条。</p></div><button class="ud-icon-btn" data-close aria-label="关闭网盘">${icon('close')}</button></div>
-    <div class="ud-body"><div class="ud-overview"><div class="ud-person"><span class="ud-avatar" data-avatar>·</span><div><div class="ud-owner" data-owner>正在读取账户</div><div class="ud-private">${icon('lock')}仅当前邻聊账户可见</div></div></div><div class="ud-retention">${icon('clock')}保留 15 天 · 到期自动清理</div></div>
-    <div class="ud-drop" data-drop><span class="ud-drop-icon">${icon('upload')}</span><div class="ud-drop-copy"><strong>把文件拖到这里</strong><p>批量上传 · 单个最大 10 GB</p></div><button class="ud-btn ud-primary" data-upload>${icon('upload')}上传文件</button><input type="file" multiple hidden data-input aria-label="上传网盘文件"></div>
+  dialog.innerHTML = `<div class="ud-head"><div class="ud-title"><h2 id="ud-title">我的云盘</h2></div><div class="ud-person"><span class="ud-avatar" data-avatar>·</span><div class="ud-owner" data-owner>正在读取账户</div></div><button class="ud-btn ud-primary" data-upload title="批量上传 · 单个最大 10 GB">${icon('upload')}上传</button><button class="ud-icon-btn" data-close aria-label="关闭网盘">${icon('close')}</button></div>
+    <div class="ud-body" data-drop><input type="file" multiple hidden data-input aria-label="上传网盘文件">
     <div class="ud-progress" data-progress hidden><div class="ud-progress-line"><span class="ud-progress-name" data-progress-name></span><span class="ud-percent" data-percent>0%</span><button class="ud-icon-btn" data-cancel-upload aria-label="取消上传">${icon('close')}</button></div><progress max="100" value="0" aria-label="文件上传进度"></progress><div class="ud-progress-note" data-progress-note></div></div>
-    <div class="ud-tools"><div class="ud-tabs" aria-label="文件类型"><button class="ud-tab" data-filter="all" aria-pressed="true">全部文件</button><button class="ud-tab" data-filter="video" aria-pressed="false">视频</button><button class="ud-tab" data-filter="other" aria-pressed="false">其他</button></div><label class="ud-search">${icon('search')}<input type="search" placeholder="搜索文件名" aria-label="搜索网盘文件"></label><button class="ud-icon-btn" data-refresh aria-label="刷新文件列表">${icon('refresh')}</button></div>
-    <div class="ud-notice" data-notice role="status" hidden></div><p class="ud-count" data-count></p>
-    <div class="ud-bulk" data-bulk hidden><span data-selection-count role="status">未选择文件</span><div class="ud-bulk-actions"><label class="ud-zip-option"><input type="checkbox" data-download-zip>ZIP 打包</label><button class="ud-btn" data-download-selection disabled>下载所选</button><button class="ud-btn ud-danger" data-delete-selection disabled>删除所选</button><details class="ud-menu" data-selection-menu><summary class="ud-btn">更多 ▾</summary><div class="ud-menu-items"><button data-select-all disabled>全选当前列表</button><button data-clear-selection disabled>取消选择</button></div></details></div></div>
+    <div class="ud-tools"><div class="ud-tabs" aria-label="文件类型"><button class="ud-tab" data-filter="all" aria-pressed="true">全部</button><button class="ud-tab" data-filter="video" aria-pressed="false">视频</button><button class="ud-tab" data-filter="other" aria-pressed="false">其他</button></div><label class="ud-search">${icon('search')}<input type="search" placeholder="搜索文件名" aria-label="搜索网盘文件"></label><div class="ud-view-switch" data-views role="group" aria-label="文件视图"><button class="ud-icon-btn" data-view="list" title="列表" aria-label="列表视图">${icon('list')}</button><button class="ud-icon-btn" data-view="grid" title="网格" aria-label="网格视图">${icon('grid')}</button><button class="ud-icon-btn" data-view="compact" title="紧凑列表" aria-label="紧凑列表视图">${icon('compact')}</button></div><div class="ud-tools-actions"><button class="ud-btn" data-multiselect aria-pressed="false">多选</button><button class="ud-icon-btn" data-refresh aria-label="刷新文件列表">${icon('refresh')}</button></div></div>
+    <div class="ud-notice" data-notice role="status" hidden></div><div class="ud-count-row"><p class="ud-count" data-count></p><span class="ud-retention" title="仅当前账户可见，文件保留 15 天，到期自动清理">保留 15 天</span></div>
+    <div class="ud-bulk" data-bulk hidden><div class="ud-selection-summary"><button class="ud-btn" data-select-all disabled>全选</button><span data-selection-count role="status">未选择文件</span></div><div class="ud-bulk-actions"><label class="ud-zip-option"><input type="checkbox" data-download-zip>ZIP 打包</label><button class="ud-btn" data-download-selection disabled>下载所选</button><button class="ud-btn ud-danger" data-delete-selection disabled>删除所选</button><button class="ud-btn" data-clear-selection disabled>清空</button></div></div>
     <div class="ud-confirm ud-bulk-confirm" data-bulk-confirm hidden><span data-bulk-confirm-note></span><button class="ud-btn" data-keep-selection>取消</button><button class="ud-btn ud-danger" data-confirm-selection>确认删除</button></div>
     <div class="ud-table-head" aria-hidden="true"><span>文件名称</span><span>大小</span><span>剩余时间</span><span data-action-title>操作</span></div><div class="ud-files" data-files></div></div>
     <div class="ud-footer"><span class="ud-footer-note" data-footer-note>临时存放，轻装流转。重要文件请另行备份。</span><div class="ud-footer-actions"><button class="ud-btn" data-done>完成</button><button class="ud-btn ud-primary" data-use hidden disabled>使用此视频</button></div></div>`;
@@ -29,7 +29,7 @@
   }
   const sort = document.createElement('select'); sort.className = 'ud-sort'; sort.setAttribute('aria-label', '文件排序');
   sort.innerHTML = '<option value="recent">最近上传</option><option value="name">名称排序</option><option value="size">文件大小</option><option value="expiry">即将到期</option>';
-  $('.ud-tools').insertBefore(sort, $('[data-refresh]')); sort.onchange = () => render();
+  $('.ud-tools').insertBefore(sort, $('[data-views]')); sort.onchange = () => render();
   const preview = document.createElement('dialog'); preview.className = 'ud-preview'; preview.setAttribute('aria-label', '视频预览');
   preview.innerHTML = '<div class="ud-preview-head"><strong></strong><button type="button" aria-label="关闭视频预览">关闭</button></div><video controls playsinline preload="metadata"></video><p>无法播放时，可下载后在本地打开。</p>';
   document.body.append(preview);
@@ -38,6 +38,9 @@
   preview.oncancel = event => { event.preventDefault(); closePreview(); };
   let selectVideo = null, ownerToken = '', files = [], filter = 'all', selected = '', pendingDelete = '', busy = false, xhr = null, cancelled = false, generation = 0, authenticated = false, downloadAbort = null;
   const checkedFiles = new Set();
+  const viewKey = 'videoAnalyzer.drive.view.v1';
+  const savedView = localStorage.getItem(viewKey);
+  let selecting = false, view = ['list', 'grid', 'compact'].includes(savedView) ? savedView : 'grid';
   const canChooseDirectory = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
   $('[data-download-zip]').checked = !canChooseDirectory;
   $('.ud-zip-option').title = canChooseDirectory ? '不勾选时，选择文件夹保存所选文件' : '当前浏览器仅支持 ZIP 打包下载';
@@ -45,13 +48,18 @@
     const inputs = [...dialog.querySelectorAll('[data-select-file]')];
     inputs.forEach(input => { input.checked = checkedFiles.has(input.value); input.disabled = busy; input.closest('[data-id]').classList.toggle('ud-selected', input.checked); });
     const all = $('[data-select-all]'), count = inputs.filter(input => input.checked).length;
-    all.textContent = count > 0 && count === inputs.length ? '取消全选' : '全选当前列表'; all.disabled = busy || !authenticated || !inputs.length;
+    all.textContent = count > 0 && count === inputs.length ? '取消全选' : '全选'; all.disabled = busy || !authenticated || !inputs.length;
     const picked = files.filter(file => checkedFiles.has(file.id));
     $('[data-selection-count]').textContent = picked.length ? `已选 ${picked.length} 个 · ${size(picked.reduce((sum, file) => sum + file.size, 0))}` : '未选择文件';
     const disabled = busy || !authenticated || !picked.length;
     $('[data-clear-selection]').disabled = $('[data-delete-selection]').disabled = $('[data-download-selection]').disabled = disabled;
     $('[data-download-zip]').disabled = busy || !canChooseDirectory;
-    $('[data-bulk]').hidden = Boolean(selectVideo);
+    $('[data-bulk]').hidden = Boolean(selectVideo) || !selecting;
+    dialog.classList.toggle('ud-selecting', selecting);
+    $('[data-multiselect]').hidden = Boolean(selectVideo);
+    $('[data-multiselect]').disabled = busy || !authenticated || (!selecting && !files.length);
+    $('[data-multiselect]').textContent = selecting ? '完成' : '多选';
+    $('[data-multiselect]').setAttribute('aria-pressed', String(selecting));
   }
   function notice(message = '', error = false) { $('[data-notice]').hidden = !message; $('[data-notice]').textContent = message; $('[data-notice]').classList.toggle('ud-error', error); }
   function closeMenus() { dialog.querySelectorAll('.ud-menu').forEach(menu => { menu.open = false; }); }
@@ -87,11 +95,10 @@
       function cancel() { finish(null); }
       media.onloadeddata = () => {
         try {
-          const canvas = document.createElement('canvas'); canvas.width = 76; canvas.height = 88;
-          const context = canvas.getContext('2d'); context.fillStyle = '#000'; context.fillRect(0, 0, 76, 88);
-          const scale = Math.min(76 / media.videoWidth, 88 / media.videoHeight);
-          const width = media.videoWidth * scale, height = media.videoHeight * scale;
-          context.drawImage(media, (76 - width) / 2, (88 - height) / 2, width, height);
+          const canvas = document.createElement('canvas'), scale = Math.min(1, 320 / Math.max(media.videoWidth, media.videoHeight));
+          canvas.width = Math.max(1, Math.round(media.videoWidth * scale)); canvas.height = Math.max(1, Math.round(media.videoHeight * scale));
+          const context = canvas.getContext('2d');
+          context.drawImage(media, 0, 0, canvas.width, canvas.height);
           finish(canvas.toDataURL('image/jpeg', 0.85));
         } catch (_) { finish(null); }
       };
@@ -102,6 +109,7 @@
     });
   }
   function loadThumbnails() {
+    if (view === 'compact') return;
     const abort = new AbortController(), queue = []; let active = 0;
     function show(element, image) {
       if (!image || abort.signal.aborted || !element.isConnected) return;
@@ -130,6 +138,8 @@
   dialog.addEventListener('close', () => { stopThumbnails(); thumbnailCache.clear(); });
   function render() {
     stopThumbnails(); closeMenus();
+    dialog.dataset.view = view;
+    dialog.querySelectorAll('[data-views] button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === view)));
     const query = $('input[type=search]').value.trim().toLowerCase();
     const eligible = files.filter(f => !selectVideo || (video(f) && f.size <= 2 * 1024 ** 3));
     const visible = eligible.filter(f => (filter === 'all' || (filter === 'video' ? video(f) : !video(f))) && f.name.toLowerCase().includes(query));
@@ -142,9 +152,9 @@
       const remaining = f.expires_at - Date.now() / 1000;
       const ttl = remaining <= 0 ? '已过期' : remaining < 86400 ? '不足 1 天' : `${Math.ceil(remaining / 86400)} 天`;
       const suffix = f.name.includes('.') ? f.name.split('.').pop().slice(0, 8) : 'FILE';
-      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : `<label class="ud-check"><input type="checkbox" data-select-file value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}"></label>`}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
+      return `<div class="ud-file ${selected === f.id ? 'ud-selected' : ''}" data-id="${esc(f.id)}"><div class="ud-file-main">${selectVideo ? `<input type="radio" name="ud-video" value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}" ${selected === f.id ? 'checked' : ''}>` : selecting ? `<label class="ud-check"><input type="checkbox" data-select-file value="${esc(f.id)}" aria-label="选择 ${esc(f.name)}"></label>` : ''}<span class="ud-file-icon ${video(f) ? 'ud-video-thumb' : 'ud-other'}" ${video(f) ? `data-thumbnail="${esc(f.id)}"` : ''}>${icon(video(f) ? 'video' : 'file')}</span><div class="ud-file-meta"><div class="ud-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="ud-file-sub">${esc(suffix)} · ${date(f.created_at)} 上传<span class="ud-mobile-size"> · ${size(f.size)}</span></div></div></div><span class="ud-file-size">${size(f.size)}</span><span class="ud-expiry ${remaining < 86400 ? 'ud-soon' : ''}">${ttl}<small>${date(f.expires_at)} 到期</small></span><div class="ud-file-actions">${selectVideo ? `<span class="ud-file-size">${selected === f.id ? '已选中' : '选择'}</span>` : selecting ? '' : `<button class="ud-icon-btn" data-download="${esc(f.id)}" aria-label="下载 ${esc(f.name)}" title="下载">${icon('download')}</button><button class="ud-icon-btn ud-delete" data-delete="${esc(f.id)}" aria-label="删除 ${esc(f.name)}" title="删除">${icon('trash')}</button>`}</div>${pendingDelete === f.id ? '<div class="ud-confirm"><span>删除这个文件？已创建的任务不受影响。</span><button class="ud-btn" data-keep>取消</button><button class="ud-btn ud-danger" data-confirm-delete>确认删除</button></div>' : ''}</div>`;
     }).join('') || empty(query ? '没有找到这个文件' : selectVideo ? '还没有可用的视频' : '这里是你的临时文件空间', query ? '换个关键词，或清空搜索试试。' : selectVideo ? '请先在邻聊网盘上传 MP4、MOV、M4V 或 WebM 视频，单个不超过 2 GB。' : '拖入视频或文件，之后可直接在 Proxy 发布任务中选用。');
-    if (!selectVideo) dialog.querySelectorAll('[data-id]').forEach(row => {
+    if (!selectVideo && !selecting) dialog.querySelectorAll('[data-id]').forEach(row => {
       const file = files.find(f => f.id === row.dataset.id);
       if (!video(file) || file.size > 2 * 1024 ** 3) return;
       const button = document.createElement('button'); button.className = 'ud-icon-btn'; button.dataset.preview = file.id; button.setAttribute('aria-label', `预览 ${file.name}`); button.title = '预览视频'; button.innerHTML = icon('video');
@@ -221,6 +231,13 @@
   dialog.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => { filter = button.dataset.filter; dialog.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); render(); });
   $('input[type=search]').oninput = render;
   $('[data-refresh]').onclick = () => { notice(); refresh(); };
+  $('[data-multiselect]').onclick = () => {
+    if (busy || selectVideo) return;
+    selecting = !selecting; checkedFiles.clear(); pendingDelete = ''; render();
+  };
+  dialog.querySelectorAll('[data-views] button').forEach(button => button.onclick = () => {
+    view = button.dataset.view; localStorage.setItem(viewKey, view); render();
+  });
   $('[data-select-all]').onclick = () => {
     if (busy) return;
     const inputs = [...dialog.querySelectorAll('[data-select-file]')], all = inputs.every(input => checkedFiles.has(input.value));
@@ -325,6 +342,10 @@
     try {
       ensureOwner();
       if (selectVideo) { selected = row.dataset.id; render(); $(`input[value="${selected}"]`)?.focus(); return; }
+      if (selecting && !event.target.closest('button, input, label')) {
+        if (checkedFiles.has(row.dataset.id)) checkedFiles.delete(row.dataset.id); else checkedFiles.add(row.dataset.id);
+        $('[data-bulk-confirm]').hidden = true; updateSelection(); return;
+      }
       if (event.target.closest('[data-preview]')) {
         const session = ownerToken;
         event.target.closest('button').disabled = true;
@@ -358,13 +379,12 @@
   window.openUserDrive = async callback => {
     if (busy) return;
     stopThumbnails(); thumbnailCache.clear(); closeMenus();
-    selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; filter = selectVideo ? 'video' : 'all';
+    selectVideo = typeof callback === 'function' ? callback : null; ownerToken = token(); files = []; selected = ''; pendingDelete = ''; authenticated = false; selecting = false; filter = selectVideo ? 'video' : 'all';
     checkedFiles.clear(); $('[data-bulk-confirm]').hidden = true; updateSelection();
     dialog.classList.toggle('ud-picker', Boolean(selectVideo));
     $('[data-action-title]').textContent = selectVideo ? '选择' : '操作';
     $('#ud-title').textContent = selectVideo ? '选择云盘视频' : '我的云盘';
-    $('[data-subtitle]').textContent = selectVideo ? '直接使用已上传的视频，无需再次上传。' : '视频与文件，随时存取。';
-    $('[data-drop]').hidden = Boolean(selectVideo); $('[data-use]').hidden = !selectVideo; $('[data-use]').disabled = true; $('[data-upload]').disabled = true;
+    $('[data-upload]').hidden = Boolean(selectVideo); $('[data-use]').hidden = !selectVideo; $('[data-use]').disabled = true; $('[data-upload]').disabled = true;
     $('[data-done]').textContent = selectVideo ? '取消' : '完成';
     $('[data-footer-note]').textContent = selectVideo ? '选中一个视频后，点击“使用此视频”。' : '临时存放，重要文件请另行备份。';
     dialog.querySelectorAll('[data-filter]').forEach(b => { b.hidden = Boolean(selectVideo) && b.dataset.filter !== 'video'; b.setAttribute('aria-pressed', String(b.dataset.filter === filter)); });
