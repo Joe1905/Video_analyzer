@@ -24,8 +24,9 @@ MAX_BYTES = 1024 ** 3
 MEDIA_URL = "https://ruitech.hk/buffer-media"
 ACTIVE = {"queued", "uploading", "submitting", "scheduled", "sending", "cancelling", "editing"}
 POST_FIELDS = "id text updatedAt status dueAt sentAt externalLink error { message } allowedActions"
+EDIT_FIELDS = POST_FIELDS + " assets { type source ... on VideoAsset { video { title thumbnailOffset } } } metadata { ... on TiktokPostMetadata { isAiGenerated } }"
 CREATE = "mutation Publish($input: CreatePostInput!) { createPost(input: $input) { ... on PostActionSuccess { post { " + POST_FIELDS + " } } ... on MutationError { message } } }"
-EDIT = "mutation Edit($input: EditPostInput!) { editPost(input: $input) { ... on PostActionSuccess { post { " + POST_FIELDS + " } } ... on MutationError { message } } }"
+EDIT = "mutation Edit($input: EditPostInput!) { editPost(input: $input) { ... on PostActionSuccess { post { " + EDIT_FIELDS + " } } ... on MutationError { message } } }"
 _started = False
 _lock = threading.RLock()
 
@@ -307,7 +308,8 @@ def apply_post(job, post):
 
 
 def reconcile(job):
-    post = graphql("query Status($id: PostId!) { post(input: {id: $id}) { " + POST_FIELDS + " } }", {"id": job["post_id"]})["post"]
+    fields = EDIT_FIELDS if job.get("pending_edit") else POST_FIELDS
+    post = graphql("query Status($id: PostId!) { post(input: {id: $id}) { " + fields + " } }", {"id": job["post_id"]})["post"]
     if post is None:
         raise Uncertain("Buffer 中找不到该任务，请核对是否已在外部删除")
     if job.get("pending_edit"):
@@ -372,7 +374,7 @@ def editable_job(job_id):
         raise PublishError("任务已开始处理或当前状态不能编辑，请刷新状态")
     if not job.get("post_id"):
         return job, None
-    post = graphql("query EditStatus($id: PostId!) { post(input: {id: $id}) { " + POST_FIELDS + " } }", {"id": job["post_id"]})["post"]
+    post = graphql("query EditStatus($id: PostId!) { post(input: {id: $id}) { " + EDIT_FIELDS + " } }", {"id": job["post_id"]})["post"]
     if not post:
         raise PublishError("Buffer 中找不到该任务，请核对")
     apply_post(job, post)
@@ -401,7 +403,32 @@ def edit_matches(changes, post):
                 return False
         except (KeyError, ValueError, AttributeError):
             return False
+    if "_asset_sources" in changes and changes["_asset_sources"] != [item.get("source") for item in post.get("assets", [])]:
+        return False
+    if "_ai_generated" in changes and changes["_ai_generated"] != (post.get("metadata") or {}).get("isAiGenerated"):
+        return False
     return True
+
+
+def edit_input(post, changes):
+    # TikTok currently validates the edit payload before merging omitted fields.
+    # Resend the current content, never a stale local media URL or empty assets.
+    assets = post.get("assets") or []
+    if len(assets) != 1 or assets[0].get("type") != "video" or not assets[0].get("source"):
+        raise PublishError("无法确认原帖视频，已停止修改，请到 Buffer 核对")
+    metadata = post.get("metadata") or {}
+    if not isinstance(metadata.get("isAiGenerated"), bool):
+        raise PublishError("无法确认原帖 AI 内容声明，已停止修改")
+    video = {"url": assets[0]["source"]}
+    settings = {key: value for key, value in (assets[0].get("video") or {}).items()
+                if key in {"title", "thumbnailOffset"} and value is not None}
+    if settings:
+        video["metadata"] = settings
+    value = {"id": post["id"], "text": changes.get("text", post["text"]), "assets": [{"video": video}],
+             "metadata": {"tiktok": {"isAiGenerated": metadata["isAiGenerated"]}}}
+    if "due_at" in changes:
+        value.update(mode="customScheduled", dueAt=changes["due_at"])
+    return value
 
 
 def edit_job(payload):
@@ -439,20 +466,18 @@ def edit_job(payload):
         if not post:
             job.update(changes)
             return save(job, message=message)
-        value = {"id": post["id"]}
-        if "text" in changes:
-            value["text"] = changes["text"]
-        if "due_at" in changes:
-            value.update(mode="customScheduled", dueAt=changes["due_at"])
+        value = edit_input(post, changes)
+        expected = {**changes, "_asset_sources": [item["source"] for item in post["assets"]],
+                    "_ai_generated": post["metadata"]["isAiGenerated"]}
         prior_state = job["state"]
-        job["pending_edit"] = changes
+        job["pending_edit"] = expected
         save(job, "editing", "正在修改 Buffer 原任务")
         try:
             result = graphql(EDIT, {"input": value}, mutation=True)["editPost"]
             if result.get("message"):
                 raise PublishError(result["message"])
             receipt = result.get("post")
-            if not receipt or receipt.get("id") != post["id"] or not edit_matches(changes, receipt):
+            if not receipt or receipt.get("id") != post["id"] or not edit_matches(expected, receipt):
                 raise Uncertain("编辑结果缺少有效回执，请查询状态")
             job.pop("pending_edit", None)
             apply_post(job, receipt)

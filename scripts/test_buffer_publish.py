@@ -123,7 +123,9 @@ class PublishingTests(unittest.TestCase):
 
     def scheduled(self):
         job = self.create()
-        post = {"id": "post-test", "text": job["text"], "status": "scheduled", "dueAt": "2027-12-01T18:00:00Z", "updatedAt": "version-1", "allowedActions": ["updatePost", "updatePostSchedule"]}
+        post = {"id": "post-test", "text": job["text"], "status": "scheduled", "dueAt": "2027-12-01T18:00:00Z", "updatedAt": "version-1", "allowedActions": ["updatePost", "updatePostSchedule"],
+                "assets": [{"type": "video", "source": "https://ruitech.hk/buffer-media/current.mp4", "video": {"title": "Current title", "thumbnailOffset": 0}}],
+                "metadata": {"isAiGenerated": True}}
         publish.apply_post(job, post)
         return job, post
 
@@ -142,7 +144,12 @@ class PublishingTests(unittest.TestCase):
             result = publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
             self.assertEqual(result["post_id"], "post-test")
             self.assertEqual(result["text"], "new text")
-            self.assertEqual(api.call_args.args[1]["input"], {"id": "post-test", "text": "new text"})
+            value = api.call_args.args[1]["input"]
+            self.assertEqual(value["text"], "new text")
+            self.assertEqual(value["assets"][0]["video"], {"url": post["assets"][0]["source"], "metadata": {"title": "Current title", "thumbnailOffset": 0}})
+            self.assertTrue(value["metadata"]["tiktok"]["isAiGenerated"])
+            self.assertNotIn("mode", value)
+            self.assertNotIn("dueAt", value)
             self.assertIn("editPost", api.call_args.args[0])
             self.assertNotIn("createPost", api.call_args.args[0])
 
@@ -152,7 +159,39 @@ class PublishingTests(unittest.TestCase):
         with patch.object(publish, "graphql", side_effect=[{"post": post}, {"editPost": {"post": receipt}}]) as api:
             result = publish.edit_job({"id": job["id"], "version": "version-1", "text": job["text"], "local_time": "2027-12-02T10:30"})
             self.assertEqual(result["due_at"], receipt["dueAt"])
-            self.assertEqual(api.call_args.args[1]["input"], {"id": "post-test", "mode": "customScheduled", "dueAt": receipt["dueAt"]})
+            value = api.call_args.args[1]["input"]
+            self.assertEqual(value["dueAt"], receipt["dueAt"])
+            self.assertEqual(value["mode"], "customScheduled")
+            self.assertEqual(value["text"], post["text"])
+            self.assertEqual(value["assets"][0]["video"]["url"], post["assets"][0]["source"])
+
+    def test_tiktok_edit_requires_full_media_payload_before_merge(self):
+        job, post = self.scheduled()
+        def api(query, variables=None, **_kwargs):
+            if "editPost" not in query:
+                return {"post": post}
+            value = variables["input"]
+            if not value.get("assets"):
+                return {"editPost": {"message": "Invalid post: Post must have either text or media., TikTok posts require at least one image or video."}}
+            return {"editPost": {"post": {**post, "dueAt": value["dueAt"], "updatedAt": "version-2"}}}
+        with patch.object(publish, "graphql", side_effect=api):
+            result = publish.edit_job({"id": job["id"], "version": "version-1", "text": post["text"], "local_time": "2027-12-02T10:30"})
+        self.assertEqual(result["state"], "scheduled")
+        self.assertEqual(result["due_at"], "2027-12-02T18:30:00Z")
+
+    def test_missing_video_stops_before_edit_mutation(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", return_value={"post": {**post, "assets": []}}) as api:
+            with self.assertRaises(publish.PublishError):
+                publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+            self.assertEqual(api.call_count, 1)
+
+    def test_edit_receipt_cannot_silently_drop_video(self):
+        job, post = self.scheduled()
+        with patch.object(publish, "graphql", side_effect=[{"post": post}, {"editPost": {"post": {**post, "text": "new text", "assets": []}}}]):
+            with self.assertRaises(publish.Uncertain):
+                publish.edit_job({"id": job["id"], "version": "version-1", "text": "new text"})
+        self.assertEqual(publish.get_job(job["id"])["state"], "uncertain")
 
     def test_edit_stale_version_does_not_mutate(self):
         job, post = self.scheduled()

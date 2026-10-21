@@ -44,11 +44,15 @@ Windows developer → GitHub → 4003 /home/openclaw/Video_analyzer-dev；远程
 
 ### 2026-10-21 待发布任务编辑
 
-官方 `editPost(input: EditPostInput!)` 支持原任务修改文案和定时时间；省略assets/metadata保留视频及声明。4003增加编辑弹窗，修改时间时显示洛杉矶/北京时间对照。保存前查询真实状态与allowedActions，以updatedAt检测其他修改；sending/sent不允许编辑。本地未提交任务直接修改持久化记录；远程任务只调用editPost，不取消重建。提交中断/超时不自动重试，保留待确认修改，查询回执匹配后再恢复状态。此次不改动用户既有任务的实际文案或排期。
+官方 `editPost(input: EditPostInput!)` 支持原任务修改文案和定时时间。初版按文档省略assets/metadata，后续真实改期发现接口合并前的校验会报缺媒体，见下面修正。4003增加编辑弹窗，修改时间时显示洛杉矶/北京时间对照。保存前查询真实状态与allowedActions，以updatedAt检测其他修改；sending/sent不允许编辑。本地未提交任务直接修改持久化记录；远程任务只调用editPost，不取消重建。提交中断/超时不自动重试，保留待确认修改，查询回执匹配后再恢复状态。初版验证不改动用户既有任务的实际文案或排期。
 
 参考：https://developers.buffer.com/types/EditPostInput.html
 
 验证：4003 Docker 30项测试通过，包含本地编辑、文案/时间最小更新、版本冲突、已发布/无权限拦截、失败保留原排期、超时读取匹配、无改动不调用mutation。真实API确认现有任务具备文案和改期权限；浏览器验证编辑弹窗、时间对照、无改动保存通过，控制台无error/warn。复核原Post ID、文案、排期一致，未对用户任务触发真实editPost；实际有变化的远程编辑通过模拟接口测试覆盖，待用户保存修改后验证。
+
+### 2026-10-21 实际改期校验修正
+
+用户实际改为洛杉矶2026-10-21 08:15时报 `Invalid post: Post must have either text or media., TikTok posts require at least one image or video.`。只读核对确认原Post仍有一个video/mp4，source与原Ubuntu地址一致，AI声明为true。改为每次从Buffer读取原帖视频、封面帧/标题、AI声明，和完整文案一起提交editPost；只改期也携带原文案/媒体。视频缺失时停止修改，回执或待确认重读必须同时匹配视频和AI声明。新增模拟实际接口“先校验再合并”行为的回归用例。真实改期与重读验证待执行。
 
 Buffer 的价值是现成账号接入和多平台排期；仅TikTok且有可用的官方权限时，可以直接替代Buffer。TikTok普通Content Posting API的公开发布审核要求，不能直接套用为私人内部发布工具已获准。
 
