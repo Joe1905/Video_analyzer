@@ -18,7 +18,7 @@
         <label for="caption">发布文案 <span id="count">0 / 2200</span></label><textarea id="caption" maxlength="2200" rows="5" placeholder="写下这条视频的文案和标签…" required></textarea>
         <label for="channel">发布频道 <button type="button" id="reloadChannels" class="text-button">刷新</button></label><select id="channel" required><option value="">请先连接 Buffer</option></select>
         <div class="mode" role="group" aria-label="发布方式"><button type="button" data-mode="now">立即发布</button><button type="button" data-mode="schedule" class="selected">定时发布</button><button type="button" data-mode="draft">Buffer 草稿</button></div>
-        <div id="scheduleField"><label for="publishTime">发布时间 <span id="timezone">America/Los_Angeles</span></label><input id="publishTime" type="datetime-local"><p class="time-note" id="serverTime"></p></div>
+        <div id="scheduleField"><label for="publishTime"><strong id="publishTimeLabel">发布时间（洛杉矶时间）</strong><span id="timezone"></span></label><input id="publishTime" type="datetime-local" aria-describedby="beijingTime serverTime"><p class="time-note" id="beijingTime" aria-live="polite">北京时间：选择发布时间后显示</p><p class="time-note" id="serverTime"></p></div>
         <label class="check"><input id="aiGenerated" type="checkbox">声明包含 AI 生成内容</label>
         <p id="composeError" class="error" role="alert"></p><button type="submit" id="submit" class="primary" disabled>创建定时任务 <svg viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></button>
       </form>

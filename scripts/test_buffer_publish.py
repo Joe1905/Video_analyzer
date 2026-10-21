@@ -68,6 +68,12 @@ class PublishingTests(unittest.TestCase):
         with self.assertRaises(publish.PublishError):
             publish.due_at("2001-01-01T10:00", "America/Los_Angeles")
 
+    def test_preview_can_convert_past_dates_without_changing_schedule_validation(self):
+        self.assertEqual(publish.due_at("2001-01-01T10:00", "America/Los_Angeles", require_future=False), "2001-01-01T18:00:00Z")
+        for value in ("2027-03-14T02:30", "2027-11-07T01:30"):
+            with self.assertRaises(publish.PublishError):
+                publish.due_at(value, "America/Los_Angeles", require_future=False)
+
     def test_channel_pause_blocks_scheduling(self):
         self.channel["isQueuePaused"] = True
         self.payload["mode"] = "now"

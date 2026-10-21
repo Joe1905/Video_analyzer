@@ -73,7 +73,7 @@ def clock():
     return {"timezone": name, "now": datetime.now(zone).isoformat()}
 
 
-def due_at(value, zone_name):
+def due_at(value, zone_name, require_future=True):
     try:
         naive = datetime.fromisoformat(str(value))
         if naive.tzinfo is not None:
@@ -87,7 +87,7 @@ def due_at(value, zone_name):
         if len(candidates) != 1:
             raise PublishError("该时间处于夏令时切换，请选择其他时间")
         result = candidates.pop()
-        if result.timestamp() < time.time() + 120:
+        if require_future and result.timestamp() < time.time() + 120:
             raise PublishError("定时时间至少在两分钟后")
         return result.isoformat().replace("+00:00", "Z")
     except (ValueError, KeyError) as exc:
@@ -437,6 +437,10 @@ def handle(handler, parsed):
                 reply(200, {"channels": channels()})
             elif parsed.path == "/api/publish/jobs":
                 reply(200, {"jobs": jobs()})
+            elif parsed.path == "/api/publish/time-preview":
+                zone = clock()["timezone"]
+                local_time = parse_qs(parsed.query).get("local_time", [""])[0]
+                reply(200, {"utc": due_at(local_time, zone, require_future=False), "timezone": zone})
             else:
                 reply(404, {"error": "接口不存在"})
             return True

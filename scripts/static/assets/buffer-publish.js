@@ -18,9 +18,44 @@
     if (!response.ok) throw new Error(result.error || '操作失败');
     return result;
   }
-  function format(value) {
+  const zoneName = zone => ({'America/Los_Angeles':'洛杉矶时间','Asia/Shanghai':'北京时间'}[zone] || zone);
+  function offset(value, zone) {
+    return new Intl.DateTimeFormat('en',{timeZone:zone,timeZoneName:'shortOffset'}).formatToParts(new Date(value)).find(p=>p.type==='timeZoneName').value.replace('GMT','UTC');
+  }
+  function format(value, zone=state.status?.timezone || 'America/Los_Angeles', labelled=true) {
     if (!value) return '—';
-    return new Intl.DateTimeFormat('zh-CN',{timeZone:state.status?.timezone || 'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(typeof value==='number' ? value*1000 : value));
+    const date=new Date(typeof value==='number' ? value*1000 : value);
+    const text=new Intl.DateTimeFormat('zh-CN',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date);
+    return text+(labelled?`（${zoneName(zone)}，${offset(date,zone)}）`:'');
+  }
+  function renderClock() {
+    if(!state.status)return;
+    const now=new Date(state.serverEpoch+performance.now()-state.serverReceived);
+    const zone=state.status.timezone;
+    $('serverTime').textContent=`当前${zoneName(zone)}：${format(now,zone,false)}（${offset(now,zone)}）`;
+  }
+  let previewTimer, previewSequence=0;
+  async function previewTime() {
+    const sequence=++previewSequence, value=$('publishTime').value;
+    const zone=state.status?.timezone || 'America/Los_Angeles';
+    $('beijingTime').classList.remove('error');
+    if(!value){
+      $('beijingTime').textContent='北京时间：选择发布时间后显示';
+      $('timezone').textContent='';
+      return;
+    }
+    $('beijingTime').textContent='北京时间：换算中…';
+    try{
+      const result=await api('time-preview?local_time='+encodeURIComponent(value));
+      if(sequence!==previewSequence)return;
+      $('timezone').textContent=offset(result.utc,result.timezone);
+      $('beijingTime').textContent=`北京时间：${format(result.utc,'Asia/Shanghai',false)}（UTC+8）`;
+    }catch(e){
+      if(sequence!==previewSequence)return;
+      $('timezone').textContent='';
+      $('beijingTime').textContent=`${zoneName(zone)}：${e.message}`;
+      $('beijingTime').classList.add('error');
+    }
   }
   function ready() {
     $('submit').disabled = state.busy || !state.asset || !$('channel').value || !state.status?.buffer_configured || !state.status?.media_configured;
@@ -28,12 +63,16 @@
   }
   async function loadStatus() {
     state.status = await api('status');
+    state.serverEpoch=Date.parse(state.status.now);
+    state.serverReceived=performance.now();
     $('connectionDot').classList.toggle('ok', state.status.buffer_configured);
     $('connectionLabel').textContent = state.status.buffer_configured ? 'Buffer 已配置' : '连接 Buffer';
     $('storageDot').classList.toggle('ok', state.status.media_configured);
     $('storageState').textContent = state.status.media_configured ? 'ruitech.hk · 已配置' : '尚未配置';
-    $('timezone').textContent = state.status.timezone;
-    $('serverTime').textContent = '服务器时间 '+format(state.status.now);
+    $('publishTimeLabel').textContent=`发布时间（${zoneName(state.status.timezone)}）`;
+    renderClock();
+    previewTime();
+    renderJobs();
     ready();
   }
   async function loadChannels() {
@@ -57,7 +96,7 @@
   function showReport(id, open=true) {
     const j=state.jobs.find(item=>item.id===id);if(!j)return;
     $('report').dataset.jobId=id;
-    $('reportBody').innerHTML=`<div class="report-summary">${esc(j.channel_name)} · ${esc(names[j.state]||j.state)}\n${esc(j.text)}\n\n${j.due_at?'计划 '+esc(format(j.due_at))+' · '+esc(j.timezone):''}\n${j.post_id?'Buffer ID '+esc(j.post_id):'本地任务 '+esc(j.id)}</div>${j.state==='uncertain'?'<p class="error">请到 Buffer 核对结果，系统未自动重发。</p>':''}${j.external_link&&/^https:\/\//.test(j.external_link)?`<a class="report-link" href="${esc(j.external_link)}" target="_blank" rel="noopener noreferrer">查看已发布视频 ↗</a>`:''}${(j.logs||[]).map(l=>`<div class="log-entry"><time>${esc(format(l.at))}</time><span>${esc(l.message)}</span></div>`).join('')}`;
+    $('reportBody').innerHTML=`<div class="report-summary">${esc(j.channel_name)} · ${esc(names[j.state]||j.state)}\n${esc(j.text)}\n\n${j.due_at?'计划 '+esc(format(j.due_at,j.timezone))+'\n北京时间：'+esc(format(j.due_at,'Asia/Shanghai',false)):''}\n${j.post_id?'Buffer ID '+esc(j.post_id):'本地任务 '+esc(j.id)}</div>${j.state==='uncertain'?'<p class="error">请到 Buffer 核对结果，系统未自动重发。</p>':''}${j.external_link&&/^https:\/\//.test(j.external_link)?`<a class="report-link" href="${esc(j.external_link)}" target="_blank" rel="noopener noreferrer">查看已发布视频 ↗</a>`:''}${(j.logs||[]).map(l=>`<div class="log-entry"><time>${esc(format(l.at,j.timezone))}</time><span>${esc(l.message)}</span></div>`).join('')}`;
     if(open&&!$('report').open)$('report').showModal();
   }
   function upload(file) {
@@ -81,7 +120,10 @@
     finally{state.busy=false;$('uploadProgress').hidden=true;ready();}
   };
   $('caption').oninput=()=>{$('count').textContent=$('caption').value.length+' / 2200';state.requestId=null;};
-  $('channel').onchange=()=>{state.requestId=null;ready();};$('publishTime').onchange=() => state.requestId=null;$('aiGenerated').onchange=() => state.requestId=null;
+  $('channel').onchange=()=>{state.requestId=null;ready();};
+  $('publishTime').oninput=()=>{state.requestId=null;previewSequence++;clearTimeout(previewTimer);previewTimer=setTimeout(previewTime,200);};
+  $('publishTime').onchange=()=>{state.requestId=null;clearTimeout(previewTimer);previewTime();};
+  $('aiGenerated').onchange=() => state.requestId=null;
   document.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
     state.mode=button.dataset.mode;state.requestId=null;document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',b===button));
     $('scheduleField').hidden=state.mode!=='schedule';$('publishTime').required=state.mode==='schedule';
@@ -108,5 +150,7 @@
   $('reloadChannels').onclick=()=>loadChannels().catch(e=>$('composeError').textContent=e.message);
   $('refreshJobs').onclick=()=>loadJobs().catch(e=>$('listError').textContent=e.message);
   Promise.all([loadStatus().then(loadChannels),loadJobs()]).catch(e=>$('composeError').textContent=e.message);
+  setInterval(renderClock,1000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadStatus().catch(e=>$('composeError').textContent=e.message);});
   setInterval(()=>{if(!document.hidden)loadJobs().catch(e=>$('listError').textContent=e.message);},15000);
 })();
