@@ -43,3 +43,47 @@
 }
 @media(max-height:600px){.ud-dialog .ud-title p,.ud-drop-copy p{display:none}.ud-dialog .ud-head{padding-top:10px;padding-bottom:10px}.ud-drop{margin-top:8px;padding:8px}.ud-tools{margin-top:8px;margin-bottom:8px}.ud-overview{padding-top:6px;padding-bottom:6px}.ud-dialog .ud-body{overflow:auto;overscroll-behavior:contain}.ud-dialog .ud-files{flex:none;min-height:145px;overflow:visible}}
 @media(max-width:360px){.ud-dialog .ud-overview{flex-direction:column;align-items:flex-start;gap:4px}.ud-retention{max-width:none}.ud-private{white-space:nowrap}}
+
+/* Keep the file area primary; account, upload and browsing controls stay compact. */
+.ud-dialog .ud-head{padding:12px 18px;gap:10px;border-bottom:1px solid var(--ud-line)}
+.ud-dialog .ud-title h2{font-size:19px;white-space:nowrap}.ud-dialog .ud-person{flex:none;gap:7px;min-width:0}.ud-dialog .ud-owner{max-width:150px;font-size:12px}.ud-dialog .ud-avatar{width:26px;height:26px}
+.ud-dialog .ud-person .drive-account{margin-left:0;padding:6px 9px;font-size:11px}.ud-dialog .ud-head>[data-upload]{padding:7px 11px}
+.ud-dialog .ud-body{padding:0 18px;overflow:hidden}.ud-dialog .ud-files{flex:1;min-height:0;overflow:auto}.ud-dialog .ud-body.ud-dragging{outline:2px dashed var(--ud-accent);outline-offset:-4px;background:#fffcfa}
+.ud-dialog .ud-tools{display:grid;grid-template-columns:auto minmax(140px,1fr) auto auto auto;gap:10px;margin:12px 0 8px;align-items:center}
+.ud-dialog .ud-search{width:100%;min-width:0}.ud-dialog .ud-sort{max-width:120px;width:100%;padding:7px;font-size:12px}
+.ud-dialog .ud-tabs{gap:2px}.ud-dialog .ud-tab{padding:7px 10px;font-size:12px}.ud-tools-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px}
+.ud-dialog .ud-tools-actions .ud-btn{padding:7px 10px}.ud-view-switch{display:flex;gap:2px;padding:2px;border:1px solid var(--ud-line);border-radius:8px}
+.ud-dialog .ud-view-switch .ud-icon-btn{width:29px;height:28px;border-radius:5px}.ud-view-switch svg{width:16px;height:16px}.ud-view-switch [aria-pressed=true]{background:var(--ud-soft);color:var(--ud-accent)}
+.ud-count-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.ud-dialog .ud-count{margin:0;font-size:11px}.ud-dialog .ud-retention{font-size:10px;max-width:none;white-space:nowrap}
+.ud-dialog .ud-bulk{padding:6px 8px;margin-bottom:8px;gap:6px 10px}.ud-selection-summary{display:flex;align-items:center;gap:9px;min-width:0}.ud-selection-summary [data-selection-count]{font-size:11px}
+.ud-dialog .ud-bulk .ud-btn{padding:6px 9px}.ud-dialog .ud-bulk-actions{width:auto;gap:4px}.ud-dialog .ud-table-head{padding:7px 8px}
+.ud-dialog .ud-file{padding:10px 8px}.ud-dialog .ud-file-icon{width:34px;height:40px}.ud-dialog .ud-file-main{gap:9px}.ud-dialog .ud-file-name{font-size:13px}
+.ud-dialog .ud-check{min-width:24px;min-height:40px}.ud-dialog .ud-file-actions:empty{display:none}
+.ud-dialog.ud-embedded{max-width:none;border-radius:10px;box-shadow:none}.ud-dialog.ud-embedded .ud-head{padding-top:12px}.ud-embedded:not(.ud-picker) .ud-footer{display:none}
+.ud-dialog .ud-footer{padding:10px 18px;margin-top:0}.ud-dialog .ud-footer-note{max-width:none}
+.ud-dialog[data-view=grid] .ud-table-head{display:none}
+.ud-dialog[data-view=grid] .ud-files{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));align-content:start;gap:12px;padding:2px 0 12px}
+.ud-dialog[data-view=grid] .ud-file{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;align-content:start;padding:9px;border:1px solid var(--ud-line);border-radius:10px;background:#fff}
+.ud-dialog[data-view=grid] .ud-file.ud-selected{background:var(--ud-soft);border-color:#e9ad9b;box-shadow:inset 0 0 0 1px #e9ad9b}
+.ud-dialog[data-view=grid] .ud-file-main{grid-column:1/-1;display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.ud-dialog[data-view=grid] .ud-file-icon{width:100%;height:128px;border-radius:7px}.ud-dialog[data-view=grid] .ud-file-icon>svg{width:34px;height:34px}
+.ud-dialog[data-view=grid] .ud-file-meta{width:100%}.ud-dialog[data-view=grid] .ud-file-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;overflow-wrap:anywhere;line-height:1.5;min-height:39px;font-size:13px}
+.ud-dialog[data-view=grid] .ud-file-sub{display:none}.ud-dialog[data-view=grid] .ud-file>.ud-file-size{display:block;grid-column:1;grid-row:2;font-size:11px}
+.ud-dialog[data-view=grid] .ud-expiry{grid-column:2;grid-row:2;margin:0;padding:0;justify-self:end;font-size:11px}.ud-dialog[data-view=grid] .ud-expiry small{display:none}
+.ud-dialog[data-view=grid] .ud-file-actions{grid-column:1/-1;grid-row:auto;justify-content:flex-end;gap:2px}.ud-dialog[data-view=grid] .ud-file-actions .ud-icon-btn{width:30px;height:30px}
+.ud-dialog[data-view=grid] .ud-check,.ud-dialog[data-view=grid] input[type=radio]{position:absolute;top:13px;left:13px;z-index:1;min-width:24px;min-height:24px;background:#fff;border-radius:5px}
+.ud-dialog[data-view=grid] input[type=radio]{width:20px;height:20px;min-width:20px;min-height:20px;accent-color:var(--ud-accent)}
+.ud-dialog[data-view=grid] .ud-confirm{grid-column:1/-1;flex-wrap:wrap}.ud-dialog[data-view=grid] .ud-confirm span{width:100%}
+.ud-dialog[data-view=grid] .ud-empty{grid-column:1/-1}
+.ud-dialog[data-view=compact] .ud-file{padding:5px 8px;min-height:43px}.ud-dialog[data-view=compact] .ud-file-icon{width:25px;height:29px;border-radius:5px}.ud-dialog[data-view=compact] .ud-file-icon svg{width:17px;height:17px}
+.ud-dialog[data-view=compact] .ud-file-sub,.ud-dialog[data-view=compact] .ud-expiry small{display:none}.ud-dialog[data-view=compact] .ud-file-name{white-space:nowrap;display:block;font-size:12px}.ud-dialog[data-view=compact] .ud-check{min-height:30px}
+@media(max-width:640px){
+  .ud-dialog .ud-head{padding:10px 12px;gap:8px}.ud-dialog .ud-title{flex:none}.ud-dialog .ud-title h2{font-size:18px}.ud-dialog .ud-person{flex:1;justify-content:flex-end;gap:5px}.ud-dialog .ud-person .ud-avatar{display:none}.ud-dialog .ud-owner{min-width:0;max-width:80px;font-size:11px}.ud-dialog .ud-person .drive-account{padding:6px;font-size:10px}.ud-dialog .ud-head>[data-upload]{padding:7px 9px;font-size:11px;gap:4px}
+  .ud-dialog .ud-body{padding:0 12px;overflow:hidden}.ud-dialog .ud-tools{grid-template-columns:minmax(0,1fr) 86px 94px;gap:6px;margin:8px 0}.ud-dialog .ud-tabs{grid-column:1/3;grid-row:1;gap:1px}.ud-dialog .ud-tab{padding:7px 9px}.ud-dialog .ud-tools-actions{grid-column:3;grid-row:1;gap:4px}.ud-dialog .ud-tools-actions .ud-btn{padding:6px 9px}.ud-dialog .ud-tools-actions .ud-icon-btn{width:29px;height:30px}
+  .ud-dialog .ud-search{grid-column:1;grid-row:2;padding:7px;gap:5px}.ud-dialog .ud-search input{font-size:11px}.ud-dialog .ud-sort{grid-column:2;grid-row:2;max-width:none;font-size:11px;padding:7px 3px}.ud-view-switch{grid-column:3;grid-row:2;justify-content:center}.ud-dialog .ud-view-switch .ud-icon-btn{width:27px;height:26px}
+  .ud-dialog .ud-count-row{margin-bottom:7px}.ud-dialog .ud-bulk-actions{width:100%;justify-content:flex-end}.ud-dialog .ud-bulk .ud-btn{padding:6px 8px}.ud-dialog .ud-bulk{gap:5px;margin-bottom:7px}.ud-dialog .ud-selection-summary{width:100%;gap:8px}
+  .ud-dialog .ud-file{padding:9px 0}.ud-dialog .ud-file-main{gap:8px}.ud-dialog .ud-expiry{padding-left:42px;margin:0;font-size:10px}.ud-dialog.ud-selecting:not(.ud-picker) .ud-expiry{padding-left:74px}.ud-dialog .ud-file-name{font-size:12px}
+  .ud-dialog.ud-embedded{border:0;border-radius:0}.ud-dialog.ud-embedded .ud-head{padding-top:10px}.ud-dialog .ud-footer{padding:8px 12px}.ud-dialog .ud-files{flex:1;min-height:0;overflow:auto}
+  .ud-dialog[data-view=grid] .ud-files{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding-bottom:10px}.ud-dialog[data-view=grid] .ud-file{padding:8px;gap:3px 6px}.ud-dialog[data-view=grid] .ud-file-icon{height:112px}.ud-dialog[data-view=grid] .ud-file-name{font-size:12px;min-height:36px}.ud-dialog[data-view=grid] .ud-expiry{padding:0;margin:0;font-size:10px}.ud-dialog[data-view=grid] .ud-file>.ud-file-size{font-size:10px}.ud-dialog[data-view=grid] .ud-check{top:11px;left:11px}
+  .ud-dialog[data-view=compact] .ud-file{padding:5px 0}.ud-dialog[data-view=compact] .ud-file-sub{display:block;font-size:0;margin-top:1px;line-height:1.3}.ud-dialog[data-view=compact] .ud-mobile-size{font-size:10px}.ud-dialog[data-view=compact] .ud-expiry{display:none}.ud-dialog[data-view=compact] .ud-file-actions{grid-row:1}
+}
