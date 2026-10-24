@@ -92,6 +92,9 @@ class MockLanChatApi:
         if path.endswith("/api/lan-chat/bootstrap"):
             await route.fulfill(json=self.bootstrap_payload())
             return
+        if path.endswith("/api/lan-chat/events"):
+            await route.fulfill(content_type="text/event-stream", body=": heartbeat\n\n")
+            return
         message_match = re.search(r"/api/lan-chat/rooms/([^/]+)/messages$", path)
         if message_match and request.method == "GET":
             room_id = message_match.group(1)
@@ -172,7 +175,7 @@ async def open_chat(browser, base_url: str, viewport: dict, api: MockLanChatApi)
     console_errors: list[str] = []
     page.on(
         "console",
-        lambda message: console_errors.append(message.text)
+        lambda message: console_errors.append(f"{message.text} {message.location}")
         if message.type == "error"
         else None,
     )
