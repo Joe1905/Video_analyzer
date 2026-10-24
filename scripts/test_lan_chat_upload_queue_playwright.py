@@ -266,6 +266,80 @@ async def mobile_network_retry_scenario(
         await context.close()
 
 
+async def file_drop_scenario(browser, base_url: str, screenshot_dir: Path) -> None:
+    api = MockLanChatApi(delay=0.15)
+    context, page, console_errors = await open_chat(
+        browser, base_url, {"width": 1280, "height": 820}, api
+    )
+    page.on("pageerror", lambda error: console_errors.append(str(error)))
+    try:
+        async def drag(event: str, target: str = "#messageInput", count: int = 1):
+            return await page.evaluate(
+                """({event, target, count}) => {
+                  const dataTransfer = new DataTransfer();
+                  for (let i = 0; i < count; i++)
+                    dataTransfer.items.add(new File(['drop'], `drop-${i}.txt`, {type:'text/plain'}));
+                  const drag = new DragEvent(event, {dataTransfer, bubbles:true, cancelable:true});
+                  document.querySelector(target).dispatchEvent(drag);
+                  return drag.defaultPrevented;
+                }""",
+                {"event": event, "target": target, "count": count},
+            )
+
+        assert page.url.endswith("/lan-chat")
+        assert "邻聊" in await page.title()
+        await expect(page.locator("#composer")).to_be_visible()
+        await drag("dragenter", ".chat")
+        await drag("dragenter")
+        await drag("dragleave", ".chat")
+        await expect(page.locator(".chat")).to_have_class(re.compile("file-drag-over"))
+        await page.screenshot(path=str(screenshot_dir / "lan-chat-file-drop.png"))
+        await drag("dragleave")
+        await expect(page.locator(".chat")).not_to_have_class(re.compile("file-drag-over"))
+
+        # Single-file drops send immediately; switching rooms must not redirect the batch.
+        await page.locator("#messageInput").fill("批次说明")
+        assert await drag("drop")
+        await page.locator('[data-room-id="group-1"]').click()
+        await wait_until(lambda: len(api.messages["public"]) == 1)
+        assert not api.messages["group-1"]
+        assert "批次说明" in api.upload_bodies[0]
+        await expect(page.locator("#messageInput")).to_have_value("")
+        await expect(page.locator(".chat")).not_to_have_class(re.compile("file-drag-over"))
+
+        assert await drag("drop", "#messages", 2)
+        await wait_until(lambda: len(api.messages["group-1"]) == 2)
+        await expect(page.locator("[data-message-id]")).to_have_count(2)
+        assert api.max_active_uploads == 1
+
+        # Outside drops are prevented, while plain text retains native drag behavior.
+        assert await drag("drop", ".app-header")
+        assert not await page.evaluate("""() => {
+          const dataTransfer = new DataTransfer();
+          dataTransfer.setData('text/plain', '文字');
+          const event = new DragEvent('drop', {dataTransfer, bubbles:true, cancelable:true});
+          document.querySelector('#messageInput').dispatchEvent(event);
+          return event.defaultPrevented;
+        }""")
+        await drag("drop", count=21)
+        await expect(page.locator("#toast")).to_contain_text("最多选择 20 个文件")
+
+        await page.locator("#imageInput").set_input_files(
+            [{"name": "draft.txt", "mimeType": "text/plain", "buffer": b"draft"}]
+        )
+        await drag("drop")
+        await expect(page.locator("#imageDraftName")).to_have_text("draft.txt")
+        await expect(page.locator("#toast")).to_contain_text("请先发送或移除")
+        await page.locator("#removeImage").click()
+        await page.evaluate("state.currentUser = null; state.token = ''")
+        await drag("drop")
+        await expect(page.locator("#toast")).to_contain_text("请先登录")
+        assert len(api.upload_names) == 3
+        assert not console_errors, console_errors
+    finally:
+        await context.close()
+
+
 async def main(base_url: str, screenshot_dir: Path) -> None:
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as playwright:
@@ -273,6 +347,7 @@ async def main(base_url: str, screenshot_dir: Path) -> None:
         try:
             await desktop_scenario(browser, base_url, screenshot_dir)
             await mobile_network_retry_scenario(browser, base_url, screenshot_dir)
+            await file_drop_scenario(browser, base_url, screenshot_dir)
         finally:
             await browser.close()
 
