@@ -31,7 +31,7 @@ function move(step){month.setMonth(month.getMonth()+step);render();}
 function render(){
  document.querySelector('.DatePicker__titleMonth').textContent=month.toLocaleString('en-US',{month:'long'});
  document.querySelector('.DatePicker__titleYear').textContent=month.getFullYear();
- days.innerHTML='<button class="DatePicker__day" data-outside="true" onclick="throw Error(\'outside month\')">25</button>';
+ days.innerHTML=`<button class="DatePicker__day" data-outside="true" onclick="throw Error('outside month')">25</button>`;
  for(let i=1;i<=31;i++){
   let b=document.createElement('button'); b.className='DatePicker__day'; b.dataset.outside='false';
   b.dataset.disabled=String(i===30); b.disabled=i===30; b.textContent=i;
