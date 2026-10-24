@@ -1173,6 +1173,10 @@ def _custom_schedule_fields(page: Any) -> tuple[Any | None, Any | None]:
     while time.time() < deadline:
         time_field = None
         date_field = None
+        date_picker = container.get_by_role("combobox", name="Select date", exact=True)
+        time_picker = container.get_by_role("combobox", name="Select time", exact=True)
+        if date_picker.count() and time_picker.count() and date_picker.is_visible() and time_picker.is_visible():
+            return time_picker, date_picker
         fields = container.locator("input.TUXTextInputCore-input[readonly]")
         for index in range(fields.count()):
             field = fields.nth(index)
@@ -1192,7 +1196,81 @@ def _custom_schedule_fields(page: Any) -> tuple[Any | None, Any | None]:
     return None, None
 
 
+def _wait_schedule_picker_value(page: Any, field: Any, expected: str) -> None:
+    deadline = time.monotonic() + 5
+    stable_since = None
+    current = ""
+    while time.monotonic() < deadline:
+        current = field.locator(".Picker__value").inner_text().strip()
+        if current == expected:
+            stable_since = stable_since or time.monotonic()
+            if time.monotonic() - stable_since >= .5:
+                return
+        else:
+            stable_since = None
+        page.wait_for_timeout(100)
+    raise RuntimeError(f"TikTok 定时设置未生效：期望 {expected}，当前 {current}")
+
+
+def _select_picker_date(page: Any, field: Any, target: datetime) -> None:
+    expected = f"{target.strftime('%b')} {target.day}, {target.year}"
+    if field.locator(".Picker__value").inner_text().strip() == expected:
+        if field.get_attribute("aria-expanded") == "true":
+            field.click(timeout=5000)
+        return
+    if field.get_attribute("aria-expanded") != "true":
+        field.click(timeout=5000)
+    calendar = page.locator(".DatePicker__panel:visible")
+    calendar.wait_for(state="visible", timeout=5000)
+    target_month = (target.year, target.month)
+    for _ in range(24):
+        month_text = calendar.locator(".DatePicker__titleMonth").inner_text().strip()
+        year_text = calendar.locator(".DatePicker__titleYear").inner_text().strip()
+        try:
+            current = datetime.strptime(f"{month_text} {year_text}", "%B %Y")
+        except ValueError as exc:
+            raise RuntimeError(f"无法识别 TikTok 日历月份：{month_text} {year_text}") from exc
+        current_month = (current.year, current.month)
+        if current_month == target_month:
+            break
+        direction = "Previous month" if current_month > target_month else "Next month"
+        calendar.get_by_role("button", name=direction, exact=True).click(timeout=5000)
+        page.wait_for_timeout(200)
+    else:
+        raise RuntimeError("目标日期超出 TikTok 日期选择范围")
+    # Adjacent-month cells can have the same day number; never choose those.
+    day = calendar.locator("button.DatePicker__day[data-outside='false']").filter(
+        has_text=re.compile(rf"^{target.day}$")
+    )
+    if day.count() != 1 or not day.is_enabled() or day.get_attribute("data-disabled") == "true":
+        raise RuntimeError(f"TikTok 日期选择器中没有可选日期 {target:%Y-%m-%d}")
+    day.click(timeout=5000)
+    _wait_schedule_picker_value(page, field, expected)
+
+
+def _select_picker_time(page: Any, field: Any, target: datetime) -> None:
+    expected = target.strftime("%H:%M")
+    if field.locator(".Picker__value").inner_text().strip() != expected:
+        if field.get_attribute("aria-expanded") != "true":
+            field.click(timeout=5000)
+        for label, value in (("Hours", target.strftime("%H")), ("Minutes", target.strftime("%M"))):
+            column = page.get_by_role("listbox", name=label, exact=True)
+            column.wait_for(state="visible", timeout=5000)
+            option = column.get_by_role("option", name=f"{label} {value}", exact=True)
+            if option.count() != 1 or not option.is_enabled() or option.get_attribute("data-disabled") == "true":
+                raise RuntimeError(f"TikTok 时间选择器中没有可选值 {label} {value}")
+            option.scroll_into_view_if_needed()
+            option.click(timeout=5000)
+            page.wait_for_timeout(150)
+    if field.get_attribute("aria-expanded") == "true":
+        field.click(timeout=5000)
+    _wait_schedule_picker_value(page, field, expected)
+
+
 def _select_custom_date(page: Any, date_field: Any, target: datetime) -> None:
+    if date_field.get_attribute("role") == "combobox":
+        _select_picker_date(page, date_field, target)
+        return
     expected = target.strftime("%Y-%m-%d")
     if date_field.input_value() == expected:
         return
@@ -1228,6 +1306,9 @@ def _select_custom_date(page: Any, date_field: Any, target: datetime) -> None:
 
 
 def _select_custom_time(page: Any, time_field: Any, target: datetime) -> None:
+    if time_field.get_attribute("role") == "combobox":
+        _select_picker_time(page, time_field, target)
+        return
     expected = target.strftime("%H:%M")
     picker_locator = page.locator(".tiktok-timepicker-time-picker-container")
 
