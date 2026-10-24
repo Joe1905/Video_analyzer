@@ -1215,6 +1215,8 @@ def _wait_schedule_picker_value(page: Any, field: Any, expected: str) -> None:
 def _select_picker_date(page: Any, field: Any, target: datetime) -> None:
     expected = f"{target.strftime('%b')} {target.day}, {target.year}"
     if field.locator(".Picker__value").inner_text().strip() == expected:
+        if field.get_attribute("aria-expanded") == "true":
+            field.click(timeout=5000)
         return
     if field.get_attribute("aria-expanded") != "true":
         field.click(timeout=5000)

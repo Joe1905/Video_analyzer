@@ -69,7 +69,9 @@ def main():
                 assert page.locator('#time').get_attribute('aria-expanded') == 'false'
                 assert page.evaluate('window.posts') == 0
                 # A repeated parameter step must not reopen or submit the form.
+                page.locator('#date').click()
                 publish._set_schedule(page, "tiktok", "2026-10-25T17:23:00Z", Path(tmp))
+                assert page.locator('#date').get_attribute('aria-expanded') == 'false'
                 publish._select_custom_date(page, page.locator('#date'), datetime(2027, 1, 25))
                 assert page.locator('#date .Picker__value').inner_text() == "Jan 25, 2027"
                 publish._select_custom_date(page, page.locator('#date'), datetime(2026, 12, 25))
