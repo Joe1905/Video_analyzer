@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
+from urllib3.exceptions import ReadTimeoutError
 
 
 class APIError(Exception):
@@ -37,6 +38,9 @@ class Service:
             raise RuntimeError("LLM API token is empty")
         self.upstream = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1").rstrip("/")
         self.key = os.getenv("DEEPSEEK_API_KEY", "")
+        self.read_timeout = int(os.getenv("LLM_READ_TIMEOUT_SECONDS", "150"))
+        if self.read_timeout <= 0:
+            raise ValueError("LLM_READ_TIMEOUT_SECONDS must be positive")
         self.model_name = os.getenv("WHISPER_MODEL", "small")
         self.cache = Path(os.getenv("XDG_CACHE_HOME", "/workspace/data/model_cache")) / "whisper"
         self.model = None
@@ -78,15 +82,33 @@ class Service:
             raise APIError(400, "This synchronous text API does not support streams or tools")
         if not self.key:
             raise APIError(503, "DeepSeek credentials are not configured")
+        started = time.monotonic()
+        status, exception_type, cause_type = 502, None, None
         try:
             response = requests.post(self.upstream + "/chat/completions", json=body,
-                headers={"Authorization": "Bearer " + self.key}, timeout=(10, 55),
+                headers={"Authorization": "Bearer " + self.key}, timeout=(10, self.read_timeout),
                 allow_redirects=False)
             data = response.json()
-        except requests.Timeout:
-            raise APIError(504, "DeepSeek request timed out; not retried") from None
-        except (requests.RequestException, ValueError):
+            status = response.status_code
+        except (requests.RequestException, ValueError) as exc:
+            exception_type = type(exc).__name__
+            # Requests wraps a timeout while consuming the body in ConnectionError.
+            read_timeout = isinstance(exc, requests.ConnectionError) and any(
+                isinstance(arg, ReadTimeoutError) for arg in exc.args)
+            if read_timeout:
+                cause_type = "ReadTimeoutError"
+            if isinstance(exc, requests.Timeout) or read_timeout:
+                status = 504
+                raise APIError(504, "DeepSeek request timed out; not retried") from None
             raise APIError(502, "DeepSeek connection or JSON response failed; not retried") from None
+        finally:
+            # Log only fixed metadata, never exception messages, keys or request/response text.
+            print(json.dumps({"event": "llm_upstream_request",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "model": body["model"], "status": status,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+                "read_timeout_seconds": self.read_timeout,
+                "exception_type": exception_type, "cause_type": cause_type}), flush=True)
         # Raw text calls preserve upstream HTTP status and JSON, including errors.
         return response.status_code, data
 
@@ -254,7 +276,8 @@ def main():
                                  int(os.getenv("LLM_PORT", "4010"))), Handler)
     server.service = service
     server.socket = service.tls_context().wrap_socket(server.socket, server_side=True)
-    print("LAN HTTPS text/ASR API listening; token stored in llm-service/api-token", flush=True)
+    print(f"LAN HTTPS text/ASR API listening; upstream timeout=(10, {service.read_timeout}); "
+          "token stored in llm-service/api-token", flush=True)
     server.serve_forever()
 
 

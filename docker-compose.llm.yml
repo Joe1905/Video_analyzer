@@ -8,6 +8,8 @@ services:
     environment:
       LLM_BIND_HOST: ${LLM_BIND_HOST:-192.168.1.254}
       LLM_PORT: ${LLM_PORT:-4010}
+      # Upstream socket read timeout (not a total request deadline).
+      LLM_READ_TIMEOUT_SECONDS: ${LLM_READ_TIMEOUT_SECONDS:-150}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_API_URL: ${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
