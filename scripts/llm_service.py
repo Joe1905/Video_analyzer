@@ -18,6 +18,20 @@ import requests
 from urllib3.exceptions import ReadTimeoutError
 
 
+
+def _asr_trace_id(value):
+    return value if isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value) else None
+
+def _asr_observe(event, trace_id=None, **fields):
+    # No credentials, headers, audio, transcript or exception text.
+    import sys
+    safe = {k: v for k, v in fields.items() if k in ("model", "duration_ms", "elapsed_ms", "cold_start", "error_type", "http_status")}
+    record = {"event": "linguabench_asr." + event, "request_id": _asr_trace_id(trace_id), "at_unix": time.time(), **safe}
+    try:
+        print(json.dumps(record, ensure_ascii=True), file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
 class APIError(Exception):
     def __init__(self, status, message):
         self.status = status
@@ -112,12 +126,83 @@ class Service:
         # Raw text calls preserve upstream HTTP status and JSON, including errors.
         return response.status_code, data
 
-    def transcribe(self, audio, language, model):
+    def transcribe_ct2(self, audio, language, trace_id=None):
+        model_id = "small-ct2-int8-v1"
+        _asr_observe("received", trace_id, model=model_id)
+        if language:
+            raise APIError(400, "This diagnostic ASR profile requires automatic language detection")
+        snapshot = Path("/workspace/data/model_cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120")
+        if not all((snapshot / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt")):
+            raise APIError(503, "Pinned CT2 small snapshot missing; no download or backend fallback")
+        if not self.asr_lock.acquire(blocking=False):
+            _asr_observe("busy", trace_id, model=model_id)
+            raise APIError(429, "ASR is busy; no retry")
+        started = time.perf_counter()
+        cold_start = getattr(self, "ct2_model", None) is None
+        timings = {}
+        try:
+            with tempfile.TemporaryDirectory(dir=self.directory) as directory:
+                source, wav = Path(directory) / "input", Path(directory) / "audio.wav"
+                with source.open("wb") as stream:
+                    while chunk := audio.read(1024 * 1024):
+                        stream.write(chunk)
+                _asr_observe("decode_start", trace_id, model=model_id)
+                t = time.perf_counter()
+                try:
+                    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(source)], capture_output=True, text=True, check=True, timeout=10)
+                    duration = float(json.loads(probe.stdout)["format"]["duration"])
+                    if not 0 < duration <= 120:
+                        raise APIError(413, "Audio must be between 0 and 120 seconds")
+                    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(wav)], capture_output=True, check=True, timeout=30)
+                except (subprocess.SubprocessError, ValueError, KeyError):
+                    raise APIError(400, "Audio cannot be decoded or has no valid duration") from None
+                timings["decode_ms"] = round((time.perf_counter() - t) * 1000)
+                _asr_observe("decode_end", trace_id, model=model_id, duration_ms=round(duration * 1000))
+                timings["load_ms"] = 0
+                if cold_start:
+                    _asr_observe("model_load_start", trace_id, model=model_id)
+                    t = time.perf_counter()
+                    from faster_whisper import WhisperModel
+                    self.ct2_model = WhisperModel(str(snapshot), device="cpu", compute_type="int8", cpu_threads=4, num_workers=1, local_files_only=True)
+                    timings["load_ms"] = round((time.perf_counter() - t) * 1000)
+                    _asr_observe("model_load_end", trace_id, model=model_id)
+                _asr_observe("inference_start", trace_id, model=model_id, cold_start=cold_start)
+                t = time.perf_counter()
+                stream, info = self.ct2_model.transcribe(str(wav), language=None, task="transcribe", beam_size=1, best_of=1,
+                    temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0), compression_ratio_threshold=2.4, log_prob_threshold=-1.0,
+                    no_speech_threshold=0.6, condition_on_previous_text=True, initial_prompt=None, hotwords=None, vad_filter=False)
+                # faster-whisper is lazy: completion includes consuming all segments.
+                segments = [{"start": s.start, "end": s.end, "text": s.text, "temperature": s.temperature,
+                    "avg_logprob": s.avg_logprob, "no_speech_prob": s.no_speech_prob, "compression_ratio": s.compression_ratio} for s in stream]
+                timings["inference_ms"] = round((time.perf_counter() - t) * 1000)
+                _asr_observe("inference_end", trace_id, model=model_id, elapsed_ms=timings["inference_ms"])
+            return {"text": "".join(s["text"] for s in segments).strip(), "language": info.language,
+                "language_probability": info.language_probability, "model": model_id, "backend": "faster-whisper",
+                "runtime": {"device": "cpu", "requested_compute_type": "int8", "actual_compute_type": self.ct2_model.model.compute_type,
+                    "cpu_threads": 4, "num_workers": 1, "snapshot": snapshot.name}, "duration": duration, "segments": segments,
+                "decode_profile": {"beam_size": 1, "best_of": 1, "temperature_schedule": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+                    "compression_ratio_threshold": 2.4, "log_prob_threshold": -1.0, "no_speech_threshold": 0.6,
+                    "fallback_attempts": None, "fallback_observation": "not_observed; final temperature does not establish attempt count"},
+                "timings": timings, "elapsed_ms": round((time.perf_counter() - started) * 1000), "cold_start": cold_start}
+        except Exception as exc:
+            _asr_observe("exception", trace_id, model=model_id, error_type=type(exc).__name__)
+            raise
+        finally:
+            self.asr_lock.release()
+
+
+    def transcribe(self, audio, language, model, trace_id=None, language_only=False):
+        if language_only and (language or model != self.model_name):
+            raise APIError(400, "Language detection requires the default multilingual model without a language hint")
+        if model == "small-ct2-int8-v1":
+            return self.transcribe_ct2(audio, language, trace_id)
+        _asr_observe("received", trace_id, model=self.model_name)
         if model != self.model_name:
             raise APIError(400, "ASR model must be " + self.model_name)
         if not (self.cache / f"{self.model_name}.pt").is_file():
             raise APIError(503, "Whisper model cache is missing; no automatic download")
         if not self.asr_lock.acquire(blocking=False):
+            _asr_observe("busy", trace_id)
             raise APIError(429, "ASR is busy; retry after the current request finishes")
         start = time.perf_counter()
         cold_start = self.model is None
@@ -131,6 +216,7 @@ class Service:
                 with source.open("wb") as stream:
                     while chunk := audio.read(1024 * 1024):
                         stream.write(chunk)
+                _asr_observe("decode_start", trace_id)
                 try:
                     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                         "format=duration", "-of", "json", str(source)],
@@ -143,16 +229,36 @@ class Service:
                         capture_output=True, check=True, timeout=30)
                 except (subprocess.SubprocessError, ValueError, KeyError):
                     raise APIError(400, "Audio cannot be decoded or has no valid duration") from None
+                _asr_observe("decode_end", trace_id, duration_ms=round(duration * 1000))
                 if self.model is None:
+                    _asr_observe("model_load_start", trace_id)
                     torch.set_num_threads(4)
                     self.model = whisper.load_model(self.model_name, device="cpu", download_root=str(self.cache))
-                result = self.model.transcribe(str(wav), language=language or None,
-                                               task="transcribe", fp16=False)
+                    _asr_observe("model_load_end", trace_id)
+                inference_start = time.perf_counter()
+                _asr_observe("inference_start", trace_id, cold_start=cold_start)
+                if language_only:
+                    samples = whisper.load_audio(str(wav))
+                    mel = whisper.log_mel_spectrogram(whisper.pad_or_trim(samples), n_mels=self.model.dims.n_mels).to(self.model.device)
+                    _, probabilities = self.model.detect_language(mel)
+                    detected = max(probabilities, key=probabilities.get)
+                    result = {"language": detected, "language_probability": probabilities[detected]}
+                else:
+                    result = self.model.transcribe(str(wav), language=language or None,
+                                                   task="transcribe", fp16=False)
+                _asr_observe("inference_end", trace_id, elapsed_ms=round((time.perf_counter() - inference_start) * 1000))
+            if language_only:
+                return {**result, "task": "detect_language", "model": self.model_name,
+                        "backend": "openai-whisper", "duration": duration,
+                        "elapsed_ms": round((time.perf_counter() - start) * 1000), "cold_start": cold_start}
             return {"text": result.get("text", "").strip(), "language": result.get("language"),
                     "model": self.model_name, "backend": "openai-whisper", "duration": duration,
                     "segments": [{"start": s["start"], "end": s["end"], "text": s["text"]}
                                  for s in result.get("segments", [])],
                     "elapsed_ms": round((time.perf_counter() - start) * 1000), "cold_start": cold_start}
+        except Exception as exc:
+            _asr_observe("exception", trace_id, error_type=type(exc).__name__)
+            raise
         finally:
             self.asr_lock.release()
 
@@ -189,13 +295,17 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Do not log credentials, source audio/text, or request bodies.
 
     def reply(self, status, body):
-        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            _asr_observe("client_disconnect", getattr(self, "_asr_trace_id", None), error_type=type(exc).__name__)
+            raise
 
     def authorized(self):
         supplied = self.headers.get("Authorization", "").encode("utf-8")
@@ -218,6 +328,10 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(30)
         if not self.authorized():
             return
+        trace_id = _asr_trace_id(self.headers.get("X-LinguaBench-ASR-Id"))
+        self._asr_trace_id = trace_id
+        if self.path in ("/v1/audio/transcriptions", "/v1/audio/translations"):
+            _asr_observe("http_received", trace_id)
         try:
             length = int(self.headers.get("Content-Length", "0"))
             audio_request = self.path in ("/v1/audio/transcriptions", "/v1/audio/translations")
@@ -255,18 +369,29 @@ class Handler(BaseHTTPRequestHandler):
                             raise APIError(400, "Invalid " + name)
                         return value
                     asr_model = field("asr_model", self.server.service.model_name) if self.path.endswith("translations") else field("model", self.server.service.model_name)
-                    result = self.server.service.transcribe(files.file, field("language"), asr_model)
+                    task = field("task", "transcribe")
+                    if task not in ("transcribe", "detect_language") or (task == "detect_language" and self.path.endswith("translations")):
+                        raise APIError(400, "Unsupported audio task")
+                    result = self.server.service.transcribe(files.file, field("language"), asr_model, trace_id=trace_id, language_only=task == "detect_language")
                     if self.path.endswith("translations"):
                         result = self.server.service.translate_audio(result, field("model", "deepseek-flash"), field("target_language", "en"))
                     status = 200
             else:
                 raise APIError(404, "Unknown endpoint")
             self.reply(status, result)
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except APIError as exc:
+            if audio_request:
+                _asr_observe("request_error", trace_id, http_status=exc.status, error_type=type(exc).__name__)
             self.reply(exc.status, {"error": {"message": str(exc)}})
-        except (ValueError, TimeoutError):
+        except (ValueError, TimeoutError) as exc:
+            if self.path in ("/v1/audio/transcriptions", "/v1/audio/translations"):
+                _asr_observe("request_error", trace_id, error_type=type(exc).__name__)
             self.reply(400, {"error": {"message": "Malformed or timed-out request"}})
-        except Exception:
+        except Exception as exc:
+            if self.path in ("/v1/audio/transcriptions", "/v1/audio/translations"):
+                _asr_observe("request_exception", trace_id, error_type=type(exc).__name__)
             self.reply(500, {"error": {"message": "Local inference failed"}})
 
 
