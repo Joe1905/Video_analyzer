@@ -4843,7 +4843,7 @@ def resolve_chat_intent(
             getattr(requests_module, "provider_name", "deepseek"),
             "chat_intent",
             {
-                "api_url": api_url.rstrip("/") + "/chat/completions",
+                "api_url": getattr(requests_module, "endpoint", api_url.rstrip("/") + "/chat/completions"),
                 "model": model,
                 "provider": normalize_chat_provider(provider),
                 "payload_sha256": __import__("hashlib").sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest(),
@@ -11154,7 +11154,7 @@ def verify_fastmoss_final_answer(
                 getattr(requests_module, "provider_name", "deepseek"),
                 "fastmoss_answer_verifier",
                 {
-                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "api_url": getattr(requests_module, "endpoint", api_url.rstrip("/") + "/chat/completions"),
                     "model": model,
                     "provider": "fastmoss",
                     "batch_index": batch_index,
@@ -12907,7 +12907,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             payload = {"model": request_model, "messages": request_messages, "tools": request_tools or None, "temperature": 0.2}
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
-                f"[CHAT] DeepSeek request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
+                f"[CHAT] {llm_provider} request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
                 f"model={request_model}, tools={len(request_tools)}, estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}, "
                 f"compressed={context_stats['compressed']}, dropped_history={context_stats['dropped_history']}",
                 flush=True,
@@ -12920,14 +12920,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 timeout=120,
             )
             if resp.status_code >= 400:
-                print(f"[CHAT] DeepSeek {resp.status_code}: {resp.text[:500]}", flush=True)
+                print(f"[CHAT] {llm_provider} {resp.status_code}: {resp.text[:500]}", flush=True)
             resp.raise_for_status()
             body = resp.json()
             record_api_call(
                 llm_provider,
                 "chat",
                 {
-                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "api_url": getattr(req, "endpoint", api_url.rstrip("/") + "/chat/completions"),
                     "model": request_model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
                     "message_count": len(request_messages),
@@ -13372,7 +13372,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                     err_text += " | body: " + exc.response.text[:300]
                 except Exception:
                     pass
-            print(f"[CHAT] DeepSeek error: {err_text}", flush=True)
+            print(f"[CHAT] {llm_provider} error: {err_text}", flush=True)
             store.update_message(session, assistant_msg, f"Request failed: {exc}", status="error")
             return
 
@@ -13473,7 +13473,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
             }
             payload_str = json.dumps(payload, ensure_ascii=False)
             print(
-                f"[CHAT] DeepSeek {endpoint} request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
+                f"[CHAT] {llm_provider} {endpoint} request: {len(request_messages)} msgs, {len(payload_str)} bytes, "
                 f"estimated_tokens={context_stats['final_tokens']}/{context_stats['max_tokens']}",
                 flush=True,
             )
@@ -13485,14 +13485,14 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
                 timeout=120,
             )
             if resp.status_code >= 400:
-                print(f"[CHAT] DeepSeek final {resp.status_code}: {resp.text[:500]}", flush=True)
+                print(f"[CHAT] {llm_provider} final {resp.status_code}: {resp.text[:500]}", flush=True)
             resp.raise_for_status()
             body = resp.json()
             record_api_call(
                 llm_provider,
                 endpoint,
                 {
-                    "api_url": api_url.rstrip("/") + "/chat/completions",
+                    "api_url": getattr(req, "endpoint", api_url.rstrip("/") + "/chat/completions"),
                     "model": final_model,
                     "payload_sha256": __import__("hashlib").sha256(payload_str.encode("utf-8")).hexdigest(),
                     "message_count": len(request_messages),
@@ -13532,7 +13532,7 @@ def run_chat_deepseek(store: ChatStore, session, assistant_msg, user_text: str, 
         store.broadcast(session.id, "done", {"messageId": assistant_msg.id, "content": fallback})
         return
     except Exception as exc:
-        print(f"[CHAT] DeepSeek final-after-tool-limit error: {exc}", flush=True)
+        print(f"[CHAT] {llm_provider} final-after-tool-limit error: {exc}", flush=True)
         fallback = (
             "本轮工具查询已经结束，但最终总结请求失败。"
             f"已取得数据的接口 {len(quality_summary.get('data', []))} 个，成功但为空的接口 {len(quality_summary.get('empty', []))} 个，"
