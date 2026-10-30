@@ -53,6 +53,59 @@
   .input-bar>button.primary{min-width:52px;padding:0 10px}
 }
 </style>
+<style>
+/* Home chat: a quieter reading surface and larger image previews. */
+body[data-provider="home"]{--bg:#f8f9fc;--line:#e6eaf1;--muted:#64748b;--brand:#315fe5;--brand2:#244bc0}
+body[data-provider="home"] header{gap:24px;padding-inline:22px;background:#fff}
+body[data-provider="home"] .header-brand{flex-shrink:0}
+body[data-provider="home"] header h1{white-space:nowrap;font-size:17px;letter-spacing:-.4px}
+body[data-provider="home"] .header-actions{overflow:hidden}
+body[data-provider="home"] .app-nav{max-width:100%;overflow-x:auto}
+body[data-provider="home"] .chat-shell{grid-template-columns:260px minmax(0,1fr)}
+body[data-provider="home"] .sidebar{background:#f4f6fa}
+body[data-provider="home"] .sidebar-head{padding:22px 18px 18px;border-bottom:0}
+body[data-provider="home"] .sidebar-head label{color:var(--muted);font-size:12px!important}
+body[data-provider="home"] #chatModel{min-height:42px;border-radius:10px!important;background:#fff;color:var(--text)}
+body[data-provider="home"] #newSession{margin-top:4px;min-height:42px;border-radius:10px;box-shadow:0 3px 8px #315fe514}
+body[data-provider="home"] .session-list{padding:6px 10px 16px}
+body[data-provider="home"] .session-item{margin-bottom:5px;padding:12px;border:1px solid transparent;border-radius:10px}
+body[data-provider="home"] .session-item.active{padding-left:12px;background:#fff;border-color:#dfe6f5;box-shadow:0 2px 5px #25355905}
+body[data-provider="home"] .session-item:hover{background:#fff}
+body[data-provider="home"] .session-item .title{font-weight:600;color:#334155}
+body[data-provider="home"] .session-item .meta{margin-top:5px}
+body[data-provider="home"] .messages{padding:32px max(28px,calc((100% - 860px)/2));gap:24px;scrollbar-width:thin;scrollbar-color:#d4dce8 transparent}
+body[data-provider="home"] .msg{max-width:88%;min-width:0}
+body[data-provider="home"] .msg.assistant{max-width:100%}
+body[data-provider="home"] .bubble{padding:16px 20px;border-radius:16px;font-size:15px;line-height:1.8;overflow-wrap:anywhere}
+body[data-provider="home"] .msg.user .bubble{background:#eaf0ff;color:#243b70;border:1px solid #dfe7fc;border-bottom-right-radius:5px}
+body[data-provider="home"] .msg.assistant .bubble{border-color:#e6eaf1;border-bottom-left-radius:5px;box-shadow:0 2px 8px #172c4d03}
+body[data-provider="home"] .msg-actions{margin-top:8px;gap:4px}
+body[data-provider="home"] .msg-actions button{font-weight:500;color:#7b879a}
+body[data-provider="home"] .time{margin-top:7px;color:#8995a7;font-size:11px}
+body[data-provider="home"] .msg.assistant .attachment-grid{gap:12px;margin-bottom:12px}
+body[data-provider="home"] .msg.assistant .attachment-grid img{width:320px;max-width:100%;height:auto;max-height:440px;object-fit:contain;border:1px solid #edf0f5;border-radius:12px}
+body[data-provider="home"] .input-bar{width:calc(100% - 56px);max-width:860px;justify-self:center;margin:0 0 24px;padding:12px;background:#fff;border:1px solid #dde4ef;border-radius:18px;box-shadow:0 6px 24px #18335a08;gap:8px;align-items:flex-end}
+body[data-provider="home"] .input-bar:focus-within{border-color:#a6b9ee;box-shadow:0 0 0 3px #315fe509,0 6px 24px #18335a08}
+body[data-provider="home"] .input-bar textarea{min-height:44px;border:0;background:transparent;border-radius:8px;box-shadow:none;padding-top:11px;padding-bottom:11px;font-size:14px}
+body[data-provider="home"] .tool-button,body[data-provider="home"] #sendBtn{height:42px;min-height:42px;border-radius:11px}
+body[data-provider="home"] .tool-button{border-color:#e8ecf3;background:#fafbfe}
+body[data-provider="home"] .empty-chat{gap:14px;padding:32px 16px}
+body[data-provider="home"] .empty-chat::before{content:"GPT";display:grid;place-items:center;width:64px;height:64px;margin-bottom:10px;border:1px solid #dbe4fc;border-radius:20px;background:#edf2ff;color:#315fe5;font-size:18px;font-weight:700;letter-spacing:1px}
+body[data-provider="home"] .empty-chat b{font-size:28px;font-weight:650;letter-spacing:-.6px}
+body[data-provider="home"] .empty-chat span{max-width:420px;font-size:13px;line-height:1.8;color:#7d899c}
+body[data-provider="home"] button:focus-visible,body[data-provider="home"] select:focus-visible{outline:2px solid #315fe5;outline-offset:3px}
+@media(max-width:800px){
+  body[data-provider="home"] header{padding-inline:10px;gap:10px}
+  body[data-provider="home"] header h1{font-size:15px}
+  body[data-provider="home"] .messages{padding:20px 14px;gap:20px}
+  body[data-provider="home"] .bubble{padding:13px 15px;font-size:14px}
+  body[data-provider="home"] .msg{max-width:94%}
+  body[data-provider="home"] .msg.assistant .attachment-grid img{width:280px;max-width:100%;max-height:360px}
+  body[data-provider="home"] .input-bar{width:calc(100% - 20px);margin-bottom:max(10px,env(safe-area-inset-bottom));padding:8px;gap:5px;border-radius:16px}
+  body[data-provider="home"] .input-bar textarea{font-size:16px}
+  body[data-provider="home"] .empty-chat b{font-size:25px}
+}
+</style>
 </head>
 <body data-provider="__CHAT_PROVIDER__">
 <header><div class="header-brand"><button class="secondary mobile-session-toggle" id="mobileSessionToggle" type="button" aria-label="打开会话列表" aria-expanded="false">☰</button><h1>__CHAT_PROVIDER_LABEL__ &#23545;&#35805;</h1></div><div class="header-actions"><nav class="app-nav" aria-label="main navigation"></nav></div></header>
