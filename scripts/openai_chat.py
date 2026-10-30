@@ -60,6 +60,8 @@ class OpenAIChatTransport:
         self.on_image = on_image
         self.on_file = on_file
         self.saved_files = {}
+        # Reuse the verified TLS connection when downloading generated files.
+        self.http = requests.Session()
 
     def input_items(self, messages):
         items = []
@@ -115,7 +117,7 @@ class OpenAIChatTransport:
             return self.saved_files[key]
         proxy = os.getenv('OPENAI_PROXY_URL', '').strip()
         try:
-            with requests.get(f'https://api.openai.com/v1/containers/{container_id}/files/{file_id}/content',
+            with self.http.get(f'https://api.openai.com/v1/containers/{container_id}/files/{file_id}/content',
                 headers={'Authorization': 'Bearer ' + os.getenv('OPENAI_API_KEY', '')},
                 proxies={'http': proxy, 'https': proxy} if proxy else None,
                 timeout=(10, 60), allow_redirects=False, stream=True) as response:
@@ -170,7 +172,7 @@ class OpenAIChatTransport:
             request["text"] = {"format": payload["response_format"]}
         proxy = os.getenv("OPENAI_PROXY_URL", "").strip()
         try:
-            response = requests.post(self.endpoint, json=request,
+            response = self.http.post(self.endpoint, json=request,
                 headers={"Authorization": "Bearer " + os.getenv("OPENAI_API_KEY", ""),
                          "Content-Type": "application/json"},
                 proxies={"http": proxy, "https": proxy} if proxy else None,

@@ -36,7 +36,7 @@ def test_text_images_and_reasoning_tool_continuation():
     tool = {"type": "function", "function": {"name": "system__current_time", "parameters": {"type": "object", "properties": {}}}}
     transport = OpenAIChatTransport()
     with patch.dict(os.environ, {"OPENAI_API_KEY": "test-secret", "OPENAI_PROXY_URL": "http://127.0.0.1:7890"}), \
-         patch("openai_chat.requests.post", side_effect=[response([reasoning, call]), response([answer()])]) as post:
+         patch("openai_chat.requests.Session.post", side_effect=[response([reasoning, call]), response([answer()])]) as post:
         first = transport.post("https://api.deepseek.com/v1/chat/completions", json={"messages": messages, "tools": [tool]})
         sent = post.call_args.kwargs["json"]
         assert post.call_args.args[0] == "https://api.openai.com/v1/responses"
@@ -58,7 +58,7 @@ def test_text_images_and_reasoning_tool_continuation():
         assert second.json()["choices"][0]["message"]["content"] == "已完成"
         assert second.json()["usage"]["total_tokens"] == 20
     assert OpenAIChatTransport().reasoning_by_call == {}
-    with patch.dict(os.environ, {"OPENAI_CHAT_REASONING_EFFORT": "low"}), patch("openai_chat.requests.post", return_value=response([answer()])) as post:
+    with patch.dict(os.environ, {"OPENAI_CHAT_REASONING_EFFORT": "low"}), patch("openai_chat.requests.Session.post", return_value=response([answer()])) as post:
         OpenAIChatTransport("gpt-6.1-terra").post("ignored", json={"messages": [{"role": "user", "content": "hi"}]})
         assert post.call_args.kwargs["json"]["model"] == "gpt-6.1-terra"
         assert post.call_args.kwargs["json"]["reasoning"]["effort"] == "medium"
@@ -69,14 +69,14 @@ def test_errors_and_key_privacy():
         assert "test-secret" not in json.dumps(chat_model_options())
         assert validate_chat_model("openai") == "openai"
         for fake in [response([], http_status=401), response([], status="incomplete"), response([])]:
-            with patch("openai_chat.requests.post", return_value=fake) as post:
+            with patch("openai_chat.requests.Session.post", return_value=fake) as post:
                 try:
                     OpenAIChatTransport().post("ignored", json={"messages": []})
                     raise AssertionError("expected error")
                 except RuntimeError as exc:
                     assert "test-secret" not in str(exc)
                 assert post.call_count == 1
-        with patch("openai_chat.requests.post", side_effect=requests.ConnectionError("test-secret")):
+        with patch("openai_chat.requests.Session.post", side_effect=requests.ConnectionError("test-secret")):
             try:
                 OpenAIChatTransport().post("ignored", json={"messages": []})
                 raise AssertionError("expected connection error")
@@ -107,7 +107,7 @@ def test_existing_chat_loop_and_tool_boundary():
              patch("web_app.build_prefixed_model_tools", return_value=[tool]), \
              patch("web_app.execute_prefixed_tool", return_value={"ok": True, "date": "2026-10-29"}) as execute, \
              patch("web_app.record_api_call") as record, \
-             patch("openai_chat.requests.post", side_effect=[response([output]), response([answer("日期已核对")])]) as post:
+             patch("openai_chat.requests.Session.post", side_effect=[response([output]), response([answer("日期已核对")])]) as post:
             web_app.run_chat_deepseek(store, session, assistant, user.content, "home", {"system__current_time"}, "openai")
             assert execute.call_count == int(permitted)
             assert assistant.status == "done", assistant.content
@@ -154,7 +154,7 @@ def test_image_generation_storage_and_followup():
             return "图片已生成"
         transport = OpenAIChatTransport(on_image=save)
         image_call = {"type": "image_generation_call", "status": "completed", "result": png}
-        with patch("openai_chat.requests.post", return_value=response([image_call])) as post:
+        with patch("openai_chat.requests.Session.post", return_value=response([image_call])) as post:
             result = transport.post("ignored", json={"messages": [], "enable_image_generation": True}).json()
             assert result["choices"][0]["message"]["content"] == "图片已生成"
             assert post.call_args.kwargs["json"]["tools"][-1]["type"] == "image_generation"
@@ -180,7 +180,7 @@ def test_image_generation_storage_and_followup():
                 raise AssertionError("invalid image accepted")
             except ValueError:
                 pass
-        with patch("openai_chat.requests.post", return_value=response([answer()])) as post:
+        with patch("openai_chat.requests.Session.post", return_value=response([answer()])) as post:
             transport.post("ignored", json={"messages": []})
             assert "tools" not in post.call_args.kwargs["json"]  # helper requests cannot generate images
             OpenAIChatTransport().post("ignored", json={"messages": [], "enable_image_generation": True})
