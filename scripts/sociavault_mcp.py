@@ -15,7 +15,10 @@ def request(method, params=None):
     entry = Path.cwd() / "data" / "sociavault-mcp" / "node_modules" / "sociavault-mcp" / "dist" / "index.js"
     if not entry.is_file():
         raise RuntimeError("请先运行 scripts/setup_sociavault_mcp.sh 安装官方 MCP")
-    process = subprocess.Popen(["node", str(entry)], stdin=subprocess.PIPE,
+    # Node's automatic address selection can stall TLS on the deployment network.
+    # Scope the verified IPv4 path to this MCP child, not other Node services.
+    process = subprocess.Popen(["node", "--no-network-family-autoselection",
+                                "--dns-result-order=ipv4first", str(entry)], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
