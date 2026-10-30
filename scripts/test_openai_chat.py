@@ -169,6 +169,7 @@ def test_image_generation_storage_and_followup():
         load_sessions_from_disk(restored)
         history, _ = web_app.build_chat_history_context(restored.sessions["images"].messages, "pending")
         items = transport.input_items(history)
+        assert all(isinstance(item["content"], str) for item in items if item.get("role") == "assistant")
         images = [part for item in items if isinstance(item.get("content"), list)
                   for part in item["content"] if part["type"] == "input_image"]
         assert len(images) == 1 and images[0]["image_url"].endswith(png)
