@@ -67,6 +67,10 @@ const TXT={newChat:"\u65b0\u5bf9\u8bdd",messages:"\u6761\u6d88\u606f",loadMore:"
 const S={sessionId:"default",sessions:[],messages:[],enabledTools:[],toolCatalog:null,nextBefore:null,hasMore:false,loading:false,sse:null,quote:null,selectionText:"",attachments:[],queuedPrompt:null};
 async function loadChatModels(){
   const select=document.getElementById('chatModel');
+  if(CHAT_PROVIDER==='home'){
+    document.querySelector('#emptyChat b').textContent='GPT 对话';
+    document.querySelector('#emptyChat span').textContent='SociaVault 全量 MCP · 思考强度固定为中';
+  }
   try{
     const response=await fetch('/api/chat/models');
     if(!response.ok)throw new Error('模型配置加载失败');

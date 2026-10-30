@@ -6610,6 +6610,18 @@ def fastmoss_mcp_content_error(result: dict[str, Any], text: str, parsed: Any) -
 
 def normalize_prefixed_tool_result(tool_id: str, result: dict[str, Any]) -> dict[str, Any]:
     domain, name = split_prefixed_tool_id(tool_id)
+    if domain == "sociavault":
+        envelope = result.get("data") or {}
+        value = envelope.get("structuredContent")
+        if value is None:
+            text = mcp_text_content(result)
+            parsed = parse_mcp_text_content(text)
+            value = parsed if parsed is not None else text
+        ok = result.get("ok") is True and not envelope.get("isError")
+        return {"ok": ok, "tool_domain": domain, "tool_name": name,
+                "mcp_data": value, "data_state": "data" if ok else "error",
+                "evidence_observed": ok, "enough_data": ok,
+                "error": None if ok else result.get("error") or mcp_text_content(result)}
     normalized = normalize_tool_result(name, result)
     if isinstance(normalized, dict):
         normalized.setdefault("tool_domain", domain)

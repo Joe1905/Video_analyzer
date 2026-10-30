@@ -1,6 +1,7 @@
 """Bounded stdio client for the pinned official SociaVault MCP server."""
 import json
 import os
+from pathlib import Path
 import selectors
 import subprocess
 import time
@@ -11,7 +12,10 @@ def request(method, params=None):
         raise RuntimeError("SociaVault API Key 未配置")
     env = dict(os.environ)
     env["SOCIAVAULT_BASE_URL"] = os.getenv("SOCIAVAULT_API_BASE", "https://api.sociavault.com")
-    process = subprocess.Popen(["sociavault-mcp"], stdin=subprocess.PIPE,
+    entry = Path.cwd() / "data" / "sociavault-mcp" / "node_modules" / "sociavault-mcp" / "dist" / "index.js"
+    if not entry.is_file():
+        raise RuntimeError("请先运行 scripts/setup_sociavault_mcp.sh 安装官方 MCP")
+    process = subprocess.Popen(["node", str(entry)], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
