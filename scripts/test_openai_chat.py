@@ -125,9 +125,27 @@ def test_missing_key_rejected_before_creating_messages():
         store.assert_not_called()
 
 
+def test_full_sociavault_catalog_and_provider_isolation():
+    tools = [{"name": f"social_tool_{i}", "inputSchema": {"type": "object", "properties": {}}} for i in range(107)]
+    with patch("web_app.list_mcp_bridge_tools", side_effect=lambda domain: tools if domain == "sociavault" else []):
+        selected = web_app.provider_default_enabled_tool_ids("home")
+        expected = {"sociavault__" + tool["name"] for tool in tools}
+        assert expected <= selected
+        exposed = {tool["function"]["name"] for tool in web_app.build_prefixed_model_tools(selected)}
+        assert expected <= exposed
+        assert not expected & web_app.filter_locked_provider_tool_ids("amazon", selected)
+        assert not expected & web_app.filter_locked_provider_tool_ids("fastmoss", selected)
+        catalog = web_app.build_tool_catalog("home")
+        assert set(catalog["toolRegistries"]["sociavault"]) == expected
+    failure = web_app.normalize_prefixed_tool_result("sociavault__test", {
+        "ok": False, "data": {"isError": True, "content": [{"type": "text", "text": "API failed"}]}})
+    assert failure["data_state"] == "error" and not failure["evidence_observed"]
+
+
 if __name__ == "__main__":
     test_text_images_and_reasoning_tool_continuation()
     test_errors_and_key_privacy()
     test_existing_chat_loop_and_tool_boundary()
     test_missing_key_rejected_before_creating_messages()
+    test_full_sociavault_catalog_and_provider_isolation()
     print("OpenAI chat tests passed")
