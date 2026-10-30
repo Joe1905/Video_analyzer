@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Offline checks for GPT text, images, tool continuation and chat boundaries."""
 import io
+import base64
 import json
 import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import requests
 import web_app
-from chat_session import Message, Session
+from chat_session import Message, Session, ChatStore, save_sessions_to_disk, load_sessions_from_disk
 from openai_chat import OpenAIChatTransport, chat_model_options, validate_chat_model
 
 
@@ -142,7 +145,49 @@ def test_full_sociavault_catalog_and_provider_isolation():
     assert failure["data_state"] == "error" and not failure["evidence_observed"]
 
 
+def test_image_generation_storage_and_followup():
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\nimage-test").decode()
+    with tempfile.TemporaryDirectory() as directory, patch("web_app.CHAT_ATTACHMENT_DIR", Path(directory)):
+        attachments = []
+        def save(encoded):
+            attachments.append(web_app.save_generated_chat_image(encoded))
+            return "图片已生成"
+        transport = OpenAIChatTransport(on_image=save)
+        image_call = {"type": "image_generation_call", "status": "completed", "result": png}
+        with patch("openai_chat.requests.post", return_value=response([image_call])) as post:
+            result = transport.post("ignored", json={"messages": [], "enable_image_generation": True}).json()
+            assert result["choices"][0]["message"]["content"] == "图片已生成"
+            assert post.call_args.kwargs["json"]["tools"][-1]["type"] == "image_generation"
+            assert post.call_args.kwargs["timeout"][1] >= 300
+            assert png not in json.dumps(result)
+        message = Message(id="image", role="assistant", content="已生成", attachments=attachments,
+            tool_calls=[{"function": {"name": "system__current_time"}}])
+        store = ChatStore(Path(directory) / "sessions.json")
+        store.sessions["images"] = Session(id="images", messages=[message, Message(id="u", role="user", content="改为蓝色")])
+        save_sessions_to_disk(store)
+        restored = ChatStore(store.sessions_file)
+        load_sessions_from_disk(restored)
+        history, _ = web_app.build_chat_history_context(restored.sessions["images"].messages, "pending")
+        items = transport.input_items(history)
+        images = [part for item in items if isinstance(item.get("content"), list)
+                  for part in item["content"] if part["type"] == "input_image"]
+        assert len(images) == 1 and images[0]["image_url"].endswith(png)
+        assert web_app.chat_attachment_path(attachments[0]["id"]).read_bytes().startswith(b"\x89PNG")
+        for bad in ["invalid base64", base64.b64encode(b"not png").decode()]:
+            try:
+                web_app.save_generated_chat_image(bad)
+                raise AssertionError("invalid image accepted")
+            except ValueError:
+                pass
+        with patch("openai_chat.requests.post", return_value=response([answer()])) as post:
+            transport.post("ignored", json={"messages": []})
+            assert "tools" not in post.call_args.kwargs["json"]  # helper requests cannot generate images
+            OpenAIChatTransport().post("ignored", json={"messages": [], "enable_image_generation": True})
+            assert "tools" not in post.call_args.kwargs["json"]  # other provider pages have no callback
+
+
 if __name__ == "__main__":
+    test_image_generation_storage_and_followup()
     test_text_images_and_reasoning_tool_continuation()
     test_errors_and_key_privacy()
     test_existing_chat_loop_and_tool_boundary()
