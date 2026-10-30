@@ -55,6 +55,8 @@
 </style>
 <style>
 /* Home chat: a quieter reading surface and larger image previews. */
+.chat-main{position:relative}
+body.file-dragging .chat-main::after{content:"松开以添加附件\A 图片、PDF、Word、Excel、CSV、TXT、MD\A 最多 6 个附件，合计 30MB";position:absolute;inset:14px;z-index:40;display:grid;place-content:center;gap:10px;padding:24px;border:2px dashed #6386e9;border-radius:20px;background:rgba(240,245,255,.97);color:#315fe5;text-align:center;white-space:pre-line;font-size:16px;line-height:2;pointer-events:none}
 .file-card{display:flex;align-items:center;gap:12px;max-width:100%;min-width:180px;padding:12px 14px;border:1px solid #dce4f1;border-radius:12px;background:#f8faff;text-decoration:none!important;color:#334155!important}
 .file-card:hover{border-color:#9bb4f2;background:#f0f5ff}
 .file-badge{font:700 10px/1.2 sans-serif;letter-spacing:.5px;border-radius:8px;padding:12px 6px;background:#e8efff;color:#315fe5}
@@ -164,6 +166,18 @@ async function deleteSession(id){if(!confirm(TXT.deleteConfirm))return;const del
 </script>
 <script>
 (()=>{const sidebar=document.getElementById("sidebar"),toggle=document.getElementById("mobileSessionToggle"),backdrop=document.getElementById("sidebarBackdrop");if(!sidebar||!toggle||!backdrop)return;const setOpen=open=>{sidebar.classList.toggle("open",open);backdrop.classList.toggle("show",open);toggle.setAttribute("aria-expanded",String(open));toggle.setAttribute("aria-label",open?"关闭会话列表":"打开会话列表")};toggle.addEventListener("click",()=>setOpen(!sidebar.classList.contains("open")));backdrop.addEventListener("click",()=>setOpen(false));sidebar.addEventListener("click",event=>{if(event.target.closest(".session-item")&&!event.target.closest(".del-btn"))setOpen(false);if(event.target.closest("#newSession"))setOpen(false)});document.addEventListener("keydown",event=>{if(event.key==="Escape")setOpen(false)});matchMedia("(min-width:801px)").addEventListener("change",event=>{if(event.matches)setOpen(false)})})();
+</script>
+<script>
+// Intercept file drops only; text/link dragging keeps its native behavior.
+let fileDragDepth=0;
+function isFileDrag(event){return Array.from(event.dataTransfer?.types||[]).includes('Files')}
+function clearFileDrag(){fileDragDepth=0;document.body.classList.remove('file-dragging')}
+document.addEventListener('dragenter',event=>{if(!isFileDrag(event))return;event.preventDefault();fileDragDepth++;document.body.classList.add('file-dragging')});
+document.addEventListener('dragover',event=>{if(!isFileDrag(event))return;event.preventDefault();event.dataTransfer.dropEffect='copy'});
+document.addEventListener('dragleave',event=>{if(!fileDragDepth)return;fileDragDepth=Math.max(0,fileDragDepth-1);if(!fileDragDepth)clearFileDrag()});
+document.addEventListener('drop',event=>{const files=Array.from(event.dataTransfer?.files||[]);if(!isFileDrag(event)&&!files.length)return;event.preventDefault();clearFileDrag();if(files.length)addImageFiles(files).catch(error=>alert(error.message))});
+document.addEventListener('dragend',clearFileDrag);
+window.addEventListener('blur',clearFileDrag);
 </script>
 </body>
 </html>
