@@ -43,6 +43,7 @@ def test_text_images_and_reasoning_tool_continuation():
         assert sent["tools"][0]["strict"] is False
         assert "temperature" not in sent and "thinking" not in sent
         assert sent["store"] is False
+        assert sent["reasoning"] == {"effort": "medium"}
         assert post.call_args.kwargs["proxies"]["https"] == "http://127.0.0.1:7890"
         assert post.call_args.kwargs["allow_redirects"] is False
         msg = first.json()["choices"][0]["message"]
@@ -54,6 +55,10 @@ def test_text_images_and_reasoning_tool_continuation():
         assert second.json()["choices"][0]["message"]["content"] == "已完成"
         assert second.json()["usage"]["total_tokens"] == 20
     assert OpenAIChatTransport().reasoning_by_call == {}
+    with patch.dict(os.environ, {"OPENAI_CHAT_REASONING_EFFORT": "low"}), patch("openai_chat.requests.post", return_value=response([answer()])) as post:
+        OpenAIChatTransport("gpt-6.1-terra").post("ignored", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert post.call_args.kwargs["json"]["model"] == "gpt-6.1-terra"
+        assert post.call_args.kwargs["json"]["reasoning"]["effort"] == "medium"
 
 
 def test_errors_and_key_privacy():

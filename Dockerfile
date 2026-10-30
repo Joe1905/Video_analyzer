@@ -58,6 +58,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Official full SociaVault MCP catalog and execution runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends npm \
+    && npm install --global sociavault-mcp@2.0.0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY scripts/ /workspace/scripts/
 COPY sellersprite_mcp_chat/ /workspace/sellersprite_mcp_chat/
 

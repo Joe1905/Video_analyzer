@@ -6,23 +6,29 @@ import requests
 
 
 def chat_model_options():
-    return [
+    default = os.getenv("OPENAI_CHAT_MODEL", "gpt-6.1-sol")
+    models = list(dict.fromkeys([default, "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna"]))
+    return [{"id": "openai" if model == default else model, "label": "GPT", "model": model,
+             "configured": bool(os.getenv("OPENAI_API_KEY", "").strip()), "reasoningEffort": "medium"}
+            for model in models] + [
         {"id": "deepseek", "label": "DeepSeek", "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash-vision-exp"),
          "configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip())},
-        {"id": "openai", "label": "GPT", "model": os.getenv("OPENAI_CHAT_MODEL", "gpt-6.1-sol"),
-         "configured": bool(os.getenv("OPENAI_API_KEY", "").strip())},
     ]
 
 
 def validate_chat_model(value):
     provider = value or "deepseek"
-    if provider not in ("deepseek", "openai"):
+    if provider not in {item["id"] for item in chat_model_options()}:
         raise ValueError("不支持的对话模型")
     option = next(item for item in chat_model_options() if item["id"] == provider)
     if not option["configured"]:
-        key = "OPENAI_API_KEY" if provider == "openai" else "DEEPSEEK_API_KEY"
+        key = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
         raise ValueError(f"{option['label']} 尚未配置，请在服务器配置 {key}")
-    return provider
+    return "deepseek" if provider == "deepseek" else "openai"
+
+
+def selected_chat_model(value):
+    return next(item["model"] for item in chat_model_options() if item["id"] == value)
 
 
 class ChatResponse:
@@ -44,9 +50,10 @@ class OpenAIChatTransport:
     provider_name = "openai"
     endpoint = "https://api.openai.com/v1/responses"
 
-    def __init__(self):
+    def __init__(self, model=None):
         # One instance per user request: never share reasoning state across chats.
         self.reasoning_by_call = {}
+        self.model = model or os.getenv("OPENAI_CHAT_MODEL", "gpt-6.1-sol")
 
     def input_items(self, messages):
         items = []
@@ -85,12 +92,12 @@ class OpenAIChatTransport:
         # are used only with the official endpoint, and no DeepSeek fallback runs.
         payload = json if json is not None else json_module.loads(data)
         request = {
-            "model": os.getenv("OPENAI_CHAT_MODEL", "gpt-6.1-sol"),
+            "model": self.model,
             "input": self.input_items(payload["messages"]),
             "store": False,
             "include": ["reasoning.encrypted_content"],
             "max_output_tokens": max(4096, int(payload.get("max_tokens") or 16384)),
-            "reasoning": {"effort": os.getenv("OPENAI_CHAT_REASONING_EFFORT", "low")},
+            "reasoning": {"effort": "medium"},
         }
         if payload.get("tools"):
             request["tools"] = [dict(tool["function"], type="function", strict=False)
