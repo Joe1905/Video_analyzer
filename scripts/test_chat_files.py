@@ -64,7 +64,7 @@ def test_generated_files_and_helper_boundary():
     download.__exit__ = Mock(return_value=False)
     download.iter_content.return_value = ['# 报告'.encode()]
     transport = OpenAIChatTransport(on_file=saved)
-    with patch('openai_chat.requests.post', return_value=result) as post, patch('openai_chat.requests.get', return_value=download) as get:
+    with patch('openai_chat.requests.Session.post', return_value=result) as post, patch('openai_chat.requests.Session.get', return_value=download) as get:
         body = transport.post('ignored', json={'messages': [], 'enable_file_tools': True}).json()
         assert post.call_args.kwargs['json']['tools'][0]['type'] == 'code_interpreter'
         assert 'sandbox:' not in body['choices'][0]['message']['content']
