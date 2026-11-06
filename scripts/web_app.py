@@ -119,6 +119,7 @@ from lan_chat import (
     LanChatStore,
 )
 from drive_download import archive_response as drive_archive_response
+from page_editor_proxy import proxy_page_editor
 from sociavault_usage import read_sociavault_usage
 from sociavault_tiktok import call_api as call_sociavault_tiktok_api
 import sociavault_tiktok_shop
@@ -440,6 +441,7 @@ NAV_ITEMS = [
     {"key": "home", "href": "/", "label": "\u9996\u9875", "title": "AI \u804a\u5929", "icon": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>'},
     {"key": "lan-chat", "href": "/lan-chat", "label": "\u90bb\u804a", "title": "\u5c40\u57df\u7f51\u804a\u5929", "icon": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 2 1.6-4.1A7 7 0 0 1 3 12c0-4 4-7 9-7s9 3 9 7z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>'},
     {"key": "drive", "href": "/drive", "label": "云盘", "title": "我的云盘", "icon": '<path d="M3 7V5h7l2 3h9v12H3z"/><path d="M3 10h18"/>'},
+    {"key": "page-editor", "href": "/page-editor/", "label": "页面编辑器", "title": "NeuroBuddie 页面编辑器", "icon": '<path d="M12 3H4v18h16v-8"/><path d="m11 11 7-7 3 3-7 7-4 1z"/>'},
     {"key": "publish", "href": "/publish", "label": "发布", "title": "Buffer 视频发布", "icon": '<path d="m3 3 18 9-18 9 4-9-4-9zM7 12h14"/>'},
     {"key": "amazon", "href": "/amazon", "label": "Amazon", "title": "Amazon", "icon": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>'},
     {"key": "shop", "href": "/shop", "label": "Shop", "title": "Shop", "icon": '<path d="M6 8h12l1 13H5z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M5 11h14"/>'},
@@ -14472,7 +14474,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         print(f"{self.address_string()} - {format % args}")
 
+    def handle_page_editor(self) -> bool:
+        path, separator, query = self.path.partition("?")
+        if path == "/page-editor":
+            self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
+            self.send_header("Location", "/page-editor/" + separator + query)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif path.startswith("/page-editor/"):
+            proxy_page_editor(self)
+        else:
+            return False
+        return True
+
     def do_GET(self) -> None:
+        if self.handle_page_editor():
+            return
         parsed = urlparse(self.path)
         if buffer_publish.handle(self, parsed):
             return
@@ -15195,6 +15213,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_POST(self) -> None:
+        if self.handle_page_editor():
+            return
         parsed = urlparse(self.path)
         if buffer_publish.handle(self, parsed):
             return
@@ -15294,6 +15314,8 @@ class Handler(BaseHTTPRequestHandler):
         return json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_HEAD(self) -> None:
+        if self.handle_page_editor():
+            return
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/lan-chat/media/") and handle_lan_chat_get(self, parsed):
             return
